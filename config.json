@@ -1,5 +1,5 @@
 {
-  "ontology_path": "C:/Users/heinz/Desktop/etc/Work/code/TAMUCT_IoT_Privacy_ResearchWork/TAMUCT_IoT_Privacy_ResearchWork/Meyah/Agentic_ai_automation/Agentic_ai_automation/data/knowledge_graph_n8259a/inferred_merged.rdf",
+  "ontology_path": "data/knowledge_graph_n8259a/inferred_merged.rdf",
   "manufacturer_class_iri": "http://example.org/onto.owl#Manufacturer",
   "policy_property_iri": "http://example.org/onto.owl#policy_description",
   "top_k": 8,
