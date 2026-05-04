@@ -39,10 +39,14 @@ def allowed_file(filename: str) -> bool:
 
 # -------------------- Config --------------------
 CFG = json.load(open("config.json", "r", encoding="utf-8"))
-ONTO_PATH = Path(CFG["ontology_path"]).resolve()
+_env_onto = os.environ.get("ONTO_PATH", "").strip()
+ONTO_PATH = Path(_env_onto).resolve() if _env_onto else Path(CFG["ontology_path"]).resolve()
+if _env_onto:
+    print(f"[path] Ontology path from ONTO_PATH env var: {ONTO_PATH}")
+else:
+    print(f"[path] Ontology path from config.json: {ONTO_PATH}")
 MANUFACTURER_CLS = URIRef(CFG["manufacturer_class_iri"])
 POLICY_PROP = URIRef(CFG["policy_property_iri"])
-
 TOP_K = int(CFG.get("top_k", 8))
 LAW_PREDICATES = [URIRef(p) for p in CFG.get("law_annotation_predicates", [])]
 LAWS = CFG.get("laws", [])
