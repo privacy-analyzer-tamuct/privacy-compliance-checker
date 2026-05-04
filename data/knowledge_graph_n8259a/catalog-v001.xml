@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<catalog prefer="public" xmlns="urn:oasis:names:tc:entity:xmlns:xml:catalog">
+    <uri id="Imports Wizard Entry" name="http://yourdomain.org/ontology/laws" uri="file:/C:/Users/mcgar/Downloads/Sesha/Sesha/legal_knowledge_graph_FINAL_STRUCTURED_LAW_LINKED.owl"/>
+    <group id="Folder Repository, directory=, recursive=true, Auto-Update=true, version=2" prefer="public" xml:base="">
+        <uri id="Automatically generated entry, Timestamp=1776871061110" name="http://example.org/onto.owl" uri="USETHISONEfixedmerged.rdf"/>
+    </group>
+</catalog>
