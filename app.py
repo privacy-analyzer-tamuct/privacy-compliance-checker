@@ -1,1272 +1,813 @@
+import re, os, json, hashlib
+from pathlib import Path
+from functools import lru_cache
+
+import numpy as np
 from flask import Flask, render_template, request, jsonify
 from rdflib import Graph, URIRef, RDF, RDFS, OWL, Literal
-from pathlib import Path
-import json
-import re
-import os
-import numpy as np
-from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.metrics.pairwise import cosine_similarity
 from sentence_transformers import SentenceTransformer
 from werkzeug.utils import secure_filename
 from PyPDF2 import PdfReader
 from groq import Groq
 
-# ====== NEW: pull in the step modules ======
 import step2_state_detector as state_detector
 import step4a_timestamps as ts
 import step4b_regulation_update as reg_update
-# Step 1 is exposed via a small wrapper below; the heavy work still
-# lives in step1_add_regulation.py.
 import step1_add_regulation as reg_add
 import step3_agentic_weighted_grader as wgrader
 
+# =============================================================================
+# FLASK
+# =============================================================================
 app = Flask(__name__)
 app.register_blueprint(wgrader.bp)
-
-# ---- PDF Upload Settings ----
 UPLOAD_FOLDER = "uploads"
-ALLOWED_EXTENSIONS = {"pdf"}
-MAX_UPLOAD_MB = 10
 app.config["UPLOAD_FOLDER"] = UPLOAD_FOLDER
-app.config["MAX_CONTENT_LENGTH"] = MAX_UPLOAD_MB * 1024 * 1024
+app.config["MAX_CONTENT_LENGTH"] = 10 * 1024 * 1024
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
+def allowed_file(fn):
+    return "." in fn and fn.rsplit(".", 1)[1].lower() == "pdf"
 
-def allowed_file(filename: str) -> bool:
-    return "." in filename and filename.rsplit(".", 1)[1].lower() in ALLOWED_EXTENSIONS
+# =============================================================================
+# CONFIG
+# =============================================================================
+CFG           = json.load(open("config.json", encoding="utf-8"))
+ONTO_PATH     = Path(os.environ.get("ONTO_PATH", "") or CFG["ontology_path"]).resolve()
+MFG_CLS       = URIRef(CFG["manufacturer_class_iri"])
+POLICY_PROP   = URIRef(CFG["policy_property_iri"])
+LAW_PREDS     = [URIRef(p) for p in CFG.get("law_annotation_predicates", [])]
+LAWS          = CFG.get("laws", [])
+THRESHOLD     = float(CFG.get("coverage_threshold", 0.27))
+EMBED_MODEL   = CFG.get("embedding_model_name", "all-MiniLM-L6-v2")
 
-
-# -------------------- Config --------------------
-CFG = json.load(open("config.json", "r", encoding="utf-8"))
-_env_onto = os.environ.get("ONTO_PATH", "").strip()
-ONTO_PATH = Path(_env_onto).resolve() if _env_onto else Path(CFG["ontology_path"]).resolve()
-if _env_onto:
-    print(f"[path] Ontology path from ONTO_PATH env var: {ONTO_PATH}")
-else:
-    print(f"[path] Ontology path from config.json: {ONTO_PATH}")
-MANUFACTURER_CLS = URIRef(CFG["manufacturer_class_iri"])
-POLICY_PROP = URIRef(CFG["policy_property_iri"])
-TOP_K = int(CFG.get("top_k", 8))
-LAW_PREDICATES = [URIRef(p) for p in CFG.get("law_annotation_predicates", [])]
-LAWS = CFG.get("laws", [])
-COVERAGE_THRESHOLD = float(CFG.get("coverage_threshold", 0.15))
-MISSING_CLASS_SIM_THRESHOLD = COVERAGE_THRESHOLD
-SIMILARITY_METHOD = CFG.get("similarity_method", "tfidf").lower()
-EMBEDDING_MODEL_NAME = CFG.get("embedding_model_name", "all-MiniLM-L6-v2")
-USER_ADDED_PROP = URIRef("http://example.org/onto.owl#userAddedManufacturer")
-
-# NEW: predicate to stamp which states a manufacturer applies to
+USER_ADDED_PROP       = URIRef("http://example.org/onto.owl#userAddedManufacturer")
 APPLIES_TO_STATE_PROP = URIRef("http://example.org/onto.owl#appliesToState")
 
-
-# -------------------- Name cleanup --------------------
-ALLOWED_MANUFACTURERS = {
-    "ADT", "ATT", "Brainly", "Bloomberg", "Dodge", "Emerson", "EOS", "Fitbit",
-    "NYTimes", "Panasonic", "Puma", "Ring", "UPS", "Verizon", "Vivint",
+# =============================================================================
+# STATE NORMALISATION  (frontend value → STATE_CATALOG ID)
+# =============================================================================
+_STATE_MAP = {
+    "all": "all", "oregon": "OR", "california": "CA",
+    "texas": "TX",
+    # Keep federal sources separate so selecting/asking for NISTIR does not
+    # also pull Public Law 116-207 into the chatbot response.
+    "nistir": "NISTIR_8259",
+    "plaw": "IoT_Cyber_Act_2020",
+    "or": "OR", "ca": "CA", "tx": "TX", "us_fed": "US_FED",
+    "nist": "NISTIR_8259", "8259": "NISTIR_8259",
+    "public_law": "IoT_Cyber_Act_2020", "pl_116_207": "IoT_Cyber_Act_2020",
 }
-SPECIAL_NAME_FIXES = {
-    "att": "AT&T", "adt": "ADT", "ups": "UPS",
-    "nytimes": "NYTimes", "eos": "EOS", "ebay": "eBay",
-}
+def norm_state(raw):
+    return _STATE_MAP.get((raw or "").strip().lower(), "all")
 
-
-def clean_manufacturer_name(name: str) -> str:
-    lower = name.lower().strip()
-    if lower in SPECIAL_NAME_FIXES:
-        return SPECIAL_NAME_FIXES[lower]
-    return name.title()
-
-
-def clean_class_label(label: str) -> str:
-    fixes = {
-        "network interface": "Network Interface",
-        "iot device": "IoT Device",
-        "io tdevice": "IoT Device",
-        "iotdevice": "IoT Device",
-    }
-    return fixes.get(label.lower().strip(), label)
-
-
-# -------------------- Load graph --------------------
-g = Graph()
+# =============================================================================
+# LOAD ONTOLOGY
+# =============================================================================
 print(f"[load] {ONTO_PATH}")
+g = Graph()
 g.parse(str(ONTO_PATH))
+print(f"[load] {len(g)} triples")
 
+def local_name(iri):
+    s = str(iri).rsplit("#", 1)[-1].rstrip("/").rsplit("/", 1)[-1]
+    return re.sub(r"([a-z])([A-Z])", r"\1 \2", s).replace("_", " ").replace("-", " ")
 
-# -------------------- Helpers (unchanged) --------------------
-def local_name(iri: str) -> str:
-    s = iri
-    if "#" in s:
-        s = s.rsplit("#", 1)[1]
-    s = s.rstrip("/").rsplit("/", 1)[-1]
-    s = re.sub(r"([a-z])([A-Z])", r"\1 \2", s)
-    return s.replace("_", " ").replace("-", " ")
+# =============================================================================
+# BUILD REGULATORY CLASS CORPUS (directly from KG annotations)
+# =============================================================================
+_LABEL_FIXES = {
+    "iot device": "IoT Device", "io tdevice": "IoT Device",
+    "iotdevice": "IoT Device", "network interface": "Network Interface",
+}
 
+def _class_label(c):
+    lbls = [str(o) for o in g.objects(c, RDFS.label)]
+    raw = lbls[0] if lbls else local_name(str(c))
+    return _LABEL_FIXES.get(raw.lower().strip(), raw)
 
-def extract_law_segments(value: str):
-    segments_by_law = {law["id"]: [] for law in LAWS}
-    if not value:
-        return {}
-    pieces = re.split(r'(?<=[.!?])\s+|[\n\r]+|;+', value)
-    for piece in pieces:
-        plow = piece.lower().strip()
-        if not plow:
-            continue
-        for law in LAWS:
-            lid = law["id"]
-            for kw in law.get("keywords", []):
-                if kw.lower() in plow:
-                    segments_by_law[lid].append(piece.strip())
-                    break
-    return {lid: segs for lid, segs in segments_by_law.items() if segs}
+def _law_ids_for_class(c):
+    ids = set()
+    for pred in LAW_PREDS:
+        for obj in g.objects(c, pred):
+            txt = str(obj).lower()
+            for law in LAWS:
+                if any(kw.lower() in txt for kw in law.get("keywords", [])):
+                    ids.add(law["id"])
+    return ids
 
+def _annotation(c):
+    parts = []
+    for pred in LAW_PREDS:
+        for obj in g.objects(c, pred):
+            parts.append(str(obj).strip())
+    return " | ".join(parts)
 
-# -------------------- Build class corpus (unchanged logic) --------------------
+# Build parallel lists
 class_iris, class_labels, class_texts = [], [], []
 class_descs, class_to_laws = {}, {}
 
 for c in g.subjects(RDF.type, OWL.Class):
     if not isinstance(c, URIRef):
         continue
-    c_iri = str(c)
-    law_ids_for_class = set()
-    law_snippets = []
-    for pred in LAW_PREDICATES:
-        for obj in g.objects(c, pred):
-            text = str(obj)
-            segments_by_law = extract_law_segments(text)
-            for lid, segs in segments_by_law.items():
-                law_ids_for_class.add(lid)
-                law_snippets.extend(segs)
-    if not law_ids_for_class:
+    law_ids = _law_ids_for_class(c)
+    if not law_ids:
         continue
-    labels = [str(o) for o in g.objects(c, RDFS.label)]
-    comments = [str(o) for o in g.objects(c, RDFS.comment)]
-    if not labels:
-        labels = [clean_class_label(local_name(c_iri))]
-    label_text = clean_class_label(" / ".join(labels))
-    combined = " ".join(labels + comments + law_snippets + [local_name(c_iri)])
-    class_desc = " ".join(comments).strip() if comments else " ".join(law_snippets).strip()
-    class_iris.append(c_iri)
-    class_labels.append(label_text)
-    class_texts.append(combined)
-    class_descs[c_iri] = class_desc
-    class_to_laws[c_iri] = law_ids_for_class
+    label   = _class_label(c)
+    comment = " ".join(str(o) for o in g.objects(c, RDFS.comment)).strip()
+    ann     = _annotation(c)
+    class_iris.append(str(c))
+    class_labels.append(label)
+    class_texts.append(f"{label} {comment} {ann} {local_name(str(c))}")
+    class_descs[str(c)]   = comment or ann[:200]
+    class_to_laws[str(c)] = law_ids
 
-if not class_texts:
-    raise SystemExit("No eligible classes found with law annotations matching configured keywords.")
+# Deduplicate by label
+seen, keep = set(), []
+for i, lbl in enumerate(class_labels):
+    if lbl.lower() not in seen:
+        seen.add(lbl.lower()); keep.append(i)
+class_iris    = [class_iris[i]   for i in keep]
+class_labels  = [class_labels[i] for i in keep]
+class_texts   = [class_texts[i]  for i in keep]
+class_descs   = {class_iris[j]: class_descs[class_iris[keep[j]]] for j in range(len(keep))}
+class_to_laws = {class_iris[j]: class_to_laws[class_iris[keep[j]]] for j in range(len(keep))}
 
-# Deduplicate
-seen = set()
-dedup_iris, dedup_labels, dedup_texts = [], [], []
-dedup_descs, dedup_laws = {}, {}
-for i, c_iri in enumerate(class_iris):
-    clean = class_labels[i].lower().strip()
-    if clean in seen:
-        continue
-    seen.add(clean)
-    dedup_iris.append(c_iri)
-    dedup_labels.append(class_labels[i])
-    dedup_texts.append(class_texts[i])
-    dedup_descs[c_iri] = class_descs[c_iri]
-    dedup_laws[c_iri] = class_to_laws[c_iri]
-class_iris, class_labels, class_texts = dedup_iris, dedup_labels, dedup_texts
-class_descs, class_to_laws = dedup_descs, dedup_laws
+if not class_iris:
+    raise SystemExit("No regulatory classes found in ontology.")
 
-iri_to_idx = {c_iri: idx for idx, c_iri in enumerate(class_iris)}
 law_to_class_idxs = {law["id"]: [] for law in LAWS}
-for c_iri, law_ids in class_to_laws.items():
-    idx = iri_to_idx.get(c_iri)
-    if idx is None:
-        continue
-    for lid in law_ids:
+for idx, c_iri in enumerate(class_iris):
+    for lid in class_to_laws[c_iri]:
         if lid in law_to_class_idxs:
             law_to_class_idxs[lid].append(idx)
 
 for law in LAWS:
-    lid = law["id"]
-    print(f"[init] Law {lid} has {len(law_to_class_idxs.get(lid, []))} related classes")
+    print(f"[init] {law['id']}: {len(law_to_class_idxs[law['id']])} classes")
 
+print(f"[init] Encoding {len(class_texts)} classes with BERT...")
+_bert = SentenceTransformer(EMBED_MODEL)
+class_embeddings = _bert.encode(class_texts, convert_to_numpy=True, normalize_embeddings=True)
 
-# -------------------- Similarity model --------------------
-if SIMILARITY_METHOD == "tfidf":
-    print("[init] Using TF-IDF similarity")
-    vectorizer = TfidfVectorizer(lowercase=True, stop_words="english",
-                                  ngram_range=(1, 2), max_features=5000)
-    X_classes = vectorizer.fit_transform(class_texts)
-    class_embeddings = None
-elif SIMILARITY_METHOD == "bert":
-    print(f"[init] Using BERT embeddings ({EMBEDDING_MODEL_NAME})")
-    model = SentenceTransformer(EMBEDDING_MODEL_NAME)
-    class_embeddings = model.encode(class_texts, convert_to_numpy=True,
-                                     normalize_embeddings=True)
-    vectorizer = None
-    X_classes = None
-else:
-    raise ValueError(f"Unknown similarity_method: {SIMILARITY_METHOD}")
+# =============================================================================
+# LOAD MANUFACTURERS
+# =============================================================================
+_ALLOWED = {"ADT","Emerson","Fitbit",
+            "Panasonic","Ring","Vivint"}
+_NAME_FIX = {"adt":"ADT"}
 
+def clean_name(n):
+    return _NAME_FIX.get(n.lower().strip(), n.title())
 
-# -------------------- Manufacturers --------------------
 manufacturers = []
-q = f"""
-SELECT DISTINCT ?inst WHERE {{
-  ?inst a ?t .
-  ?t rdfs:subClassOf* <{CFG["manufacturer_class_iri"]}> .
-}}
-"""
-for row in g.query(q, initNs={"rdfs": RDFS}):
-    inst = row.inst
-    iri = str(inst)
-    labels = [str(o) for o in g.objects(inst, RDFS.label)]
-    name = clean_manufacturer_name(labels[0]) if labels else clean_manufacturer_name(local_name(iri))
-    policies = [str(o) for o in g.objects(inst, POLICY_PROP) if isinstance(o, Literal)]
-    policy = max(policies, key=len) if policies else ""
-    user_added = any(g.objects(inst, USER_ADDED_PROP))
-    manufacturers.append({"iri": iri, "name": name, "policy": policy, "user_added": user_added})
+for row in g.query(f"SELECT DISTINCT ?i WHERE {{ ?i a ?t . ?t <{RDFS.subClassOf}>* <{MFG_CLS}> . }}"):
+    inst = row.i
+    lbls = [str(o) for o in g.objects(inst, RDFS.label)]
+    name = clean_name(lbls[0] if lbls else local_name(str(inst)))
+    pols = [str(o) for o in g.objects(inst, POLICY_PROP) if isinstance(o, Literal)]
+    pol  = max(pols, key=len) if pols else ""
+    added = any(True for _ in g.objects(inst, USER_ADDED_PROP))
+    manufacturers.append({"iri": str(inst), "name": name, "policy": pol, "user_added": added})
 
 manufacturers.sort(key=lambda m: m["name"].lower())
-
-
-def is_allowed_name(name: str) -> bool:
-    nlow = name.lower()
-    return any(allowed.lower() in nlow for allowed in ALLOWED_MANUFACTURERS)
-
-
-filtered = [m for m in manufacturers if m.get("user_added") or is_allowed_name(m["name"])]
-if filtered:
-    manufacturers = filtered
-    print(f"[init] Loaded {len(manufacturers)} manufacturers after filtering.")
-else:
-    print("[init] WARNING: filter removed all manufacturers; using full list instead.")
-
-
-def generate_manufacturer_iri(name: str) -> URIRef:
-    base = str(MANUFACTURER_CLS).split("#")[0] + "#"
-    slug = re.sub(r"\W+", "_", name.strip()) or "Manufacturer"
-    candidate = URIRef(base + slug)
-    i = 1
-    while (candidate, None, None) in g:
-        candidate = URIRef(base + f"{slug}_{i}")
-        i += 1
-    return candidate
-
-
-def find_existing_manufacturer_by_name(name: str):
-    """For re-upload detection: look up an existing manufacturer by name."""
-    target = name.lower().strip()
-    for m in manufacturers:
-        if m["name"].lower().strip() == target:
-            return m
-    return None
-
-# ---- SCORING !STATIC for now
-""" agentigraph paper findings
-#--- **idea 1** - weighted classes determined by agents that affect compliance scores 
-                    - (ex strong preconfig authentication > transducer element )
-                - how much an IoT manufacturer neglects one aspect of regulation that is more detrimental than another
-
-#--- idea 2 - /for chat imp/ - MULTI-HOP reasoning: llm decides how many hops to conclude evaluation of anaylses
-                - surgically pulls out kg content LLM needs to answer questions for efficeincy and breaks it down with agents
-                - pertty ideal for complex queries/more dynamic
-                    v- LLM LOOKS for missing classes
-                    v- Result Returned
-                    v- rescores class
-                    ^v- Result returned or loops back if unsure
-                - FOR MORE ACCURATE GAP IDENTIFICATION 
-"""
-# -------------------- Scoring (unchanged) --------------------
-def rank_classes_for_policy(policy_text: str, state: str = "all"):
-    if not policy_text or not policy_text.strip():
-        return [], None
-    if SIMILARITY_METHOD == "tfidf":
-        q_vec = vectorizer.transform([policy_text])
-        sims = cosine_similarity(q_vec, X_classes)[0]
-    elif SIMILARITY_METHOD == "bert":
-        q_emb = model.encode([policy_text], convert_to_numpy=True,
-                             normalize_embeddings=True)[0]
-        sims = np.dot(class_embeddings, q_emb)
-    else:
-        raise ValueError(f"Unknown similarity_method: {SIMILARITY_METHOD}")
-    idxs = [i for i, s in enumerate(sims) if float(s) >= COVERAGE_THRESHOLD]
-    idxs.sort(key=lambda i: sims[i], reverse=True)
-    top_classes = [{
-        "class_iri": class_iris[i],
-        "class_label": class_labels[i],
-        "class_desc": class_descs.get(class_iris[i], ""),
-    } for i in idxs]
-    return top_classes, sims
-
-
-def compute_law_coverage(sims, state: str = "all"):
-    if sims is None or not LAWS:
-        return [], [law["id"] for law in LAWS], 0.0
-    # Filter laws by state if requested
-    if state and state != "all":
-        applicable = state_detector.applicable_laws([state], LAWS)
-        applicable_ids = {law["id"] for law in applicable}
-        active_laws = [law for law in LAWS if law["id"] in applicable_ids]
-    else:
-        active_laws = LAWS
-    law_coverage, missing_laws = [], []
-    total_classes, total_above = 0, 0
-    for law in active_laws:
-        lid = law["id"]
-        class_idxs = law_to_class_idxs.get(lid, [])
-        if not class_idxs:
-            law_coverage.append({"id": lid, "label": law["label"],
-                                 "coverage_percent": 0.0,
-                                 "num_classes": 0, "num_above_threshold": 0})
-            missing_laws.append(lid)
-            continue
-        scores = [float(sims[i]) for i in class_idxs]
-        above = [s for s in scores if s >= COVERAGE_THRESHOLD]
-        coverage_percent = 100.0 * len(above) / len(class_idxs)
-        law_coverage.append({"id": lid, "label": law["label"],
-                             "coverage_percent": round(coverage_percent, 2),
-                             "num_classes": len(class_idxs),
-                             "num_above_threshold": len(above)})
-        if len(above) == 0:
-            missing_laws.append(lid)
-        total_classes += len(class_idxs)
-        total_above += len(above)
-    overall_percent = round(100.0 * total_above / total_classes, 2) if total_classes > 0 else 0.0
-    return law_coverage, missing_laws, overall_percent
-
-
-def compute_missing_classes(sims, state: str = "all"):
-    if sims is None:
-        return []
-    if state and state != "all":
-        applicable = state_detector.applicable_laws([state], LAWS)
-        applicable_ids = {law["id"] for law in applicable}
-        active_laws = [law for law in LAWS if law["id"] in applicable_ids]
-    else:
-        active_laws = LAWS
-    missing = []
-    for law in active_laws:
-        lid = law["id"]
-        for idx in law_to_class_idxs.get(lid, []):
-            if float(sims[idx]) < COVERAGE_THRESHOLD:
-                c_iri = class_iris[idx]
-                missing.append({
-                    "class_iri": c_iri,
-                    "class_label": class_labels[idx],
-                    "class_desc": class_descs.get(c_iri, ""),
-                    "law_id": lid, "law_label": law["label"],
-                })
-    return missing
-
-
-# -------------------- SWRL / SPARQL helpers --------------------
-# SWRL inferencing flag — set True if your ontology uses SWRL rules
-# and you have a SWRL-capable reasoner active; False otherwise.
-SWRL_ACTIVE = False
-
-SWRL_COVERS_PRED = URIRef("http://example.org/onto.owl#swrl_covers")
-
-
-def get_swrl_covered_classes(manufacturer_iri: str) -> set:
-    """
-    Return the set of class IRIs that SWRL rules have inferred the
-    given manufacturer covers. If SWRL is not active, returns empty set.
-    """
-    if not SWRL_ACTIVE:
-        return set()
-    inst = URIRef(manufacturer_iri)
-    return {str(obj) for obj in g.objects(inst, SWRL_COVERS_PRED)}
-
-
-def get_hybrid_tier(bert_covered: bool, swrl_decision: bool) -> str:
-    """
-    Combine BERT similarity result with SWRL inference into a single tier label.
-      BERT ✓  SWRL ✓  -> "confirmed"
-      BERT ✓  SWRL ✗  -> "bert_only"
-      BERT ✗  SWRL ✓  -> "swrl_only"   (shouldn't appear in top_classes)
-      BERT ✗  SWRL ✗  -> "neither"
-    """
-    if bert_covered and swrl_decision:
-        return "confirmed"
-    if bert_covered:
-        return "bert_only"
-    if swrl_decision:
-        return "swrl_only"
-    return "neither"
-
-# -------- VALIDATION !STATIC
-# --- idea 1 - 
-def sparql_validate_manufacturer(manufacturer_iri: str, sims) -> dict:
-    """
-    Cross-validate BERT similarity scores against the ontology structure
-    using SPARQL. Returns an agreement summary used by /detail and /sparql_validate_all.
-    """
-    inst = URIRef(manufacturer_iri)
-    # Query: which classes does the ontology directly link this manufacturer to?
-    sparql_covered = set()
-    try:
-        q = f"""
-        SELECT DISTINCT ?cls WHERE {{
-            <{manufacturer_iri}> a ?cls .
-            ?cls a <{OWL.Class}> .
-        }}
-        """
-        for row in g.query(q):
-            sparql_covered.add(str(row.cls))
-    except Exception:
-        pass
-
-    bert_covered = set()
-    if sims is not None:
-        for i, score in enumerate(sims):
-            if float(score) >= COVERAGE_THRESHOLD:
-                bert_covered.add(class_iris[i])
-
-    agreed = len(bert_covered & sparql_covered)
-    total_pairs = len(bert_covered | sparql_covered)
-
-    return {
-        "agreed": agreed,
-        "total_pairs": total_pairs,
-        "agreement_rate": round(100.0 * agreed / total_pairs, 2) if total_pairs > 0 else 0.0,
-        "bert_only": list(bert_covered - sparql_covered)[:5],
-        "sparql_only": list(sparql_covered - bert_covered)[:5],
-    }
-
-
-# ==========================================================================
-# ROUTES
-# ==========================================================================
-@app.get("/")
-def index():
-    return render_template("index.html")
-
-
-@app.get("/list")
-def list_instances():
-    return jsonify([{"iri": m["iri"], "name": m["name"]} for m in manufacturers])
-
-
-
-
-
-# ---------------------------------------------------------------
-# /add_manufacturer — now with timestamps + state detection
-# ---------------------------------------------------------------
-@app.post("/add_manufacturer")
-def add_manufacturer():
-    data = request.get_json(force=True) or {}
-    name = (data.get("name") or "").strip()
-    policy = (data.get("policy") or "").strip()
-    # NEW: optional list of state codes the user checked on the UI
-    selected_states = data.get("selected_states") or []
-
-    if not name or not policy:
-        return jsonify({"error": "Both name and policy are required."}), 400
-
-    # Detect whether this is a re-upload (same name as an existing manufacturer)
-    existing = find_existing_manufacturer_by_name(name)
-
-    if existing:
-        inst_iri = URIRef(existing["iri"])
-    else:
-        inst_iri = generate_manufacturer_iri(name)
-        g.add((inst_iri, RDF.type, MANUFACTURER_CLS))
-        g.add((inst_iri, RDFS.label, Literal(name)))
-        g.add((inst_iri, USER_ADDED_PROP, Literal(True)))
-
-    # ---- STEP 4a: upsert policy with timestamps ----
-    ts_info = ts.upsert_policy(g, inst_iri, POLICY_PROP, policy)
-
-    # ---- STEP 2: figure out which states apply ----
-    auto = state_detector.detect_states_from_text(policy)
-    if selected_states:
-        final_states = selected_states
-    else:
-        final_states = [s["id"] for s in auto["detected"]]
-
-    # Clear previous state stamps and write the new ones
-    for old in list(g.objects(inst_iri, APPLIES_TO_STATE_PROP)):
-        g.remove((inst_iri, APPLIES_TO_STATE_PROP, old))
-    for sid in final_states:
-        g.add((inst_iri, APPLIES_TO_STATE_PROP, Literal(sid)))
-
-    applicable = state_detector.applicable_laws(final_states, LAWS)
-
-    # Update in-memory list
-    new_entry = {
-        "iri": str(inst_iri),
-        "name": clean_manufacturer_name(name),
-        "policy": policy,
-        "user_added": True,
-    }
-    if existing:
-        # Replace the existing entry in the list
-        manufacturers[:] = [m for m in manufacturers if m["iri"] != str(inst_iri)]
-    manufacturers.append(new_entry)
-    manufacturers.sort(key=lambda m: m["name"].lower())
-
-    try:
-        g.serialize(destination=str(ONTO_PATH), format="xml")
-    except Exception as e:
-        print("[error] Failed to save ontology:", e)
-        return jsonify({
-            "error": "Manufacturer saved in memory, but failed to update ontology file."
-        }), 500
-
-    return jsonify({
-        "iri": new_entry["iri"],
-        "name": new_entry["name"],
-        # NEW fields in the response:
-        "action": ts_info["action"],  # "created" or "updated"
-        "created_at": ts_info["created_at"],
-        "modified_at": ts_info["modified_at"],
-        "had_previous_version": ts_info["previous_policy"] is not None,
-        "auto_detected_states": auto,
-        "selected_states": final_states,
-        "applicable_laws": applicable,
-    }), 200 if existing else 201
-
-
-# ---------------------------------------------------------------
-# NEW: /detect_states — preview what Step 2 would do without saving
-# ---------------------------------------------------------------
-@app.post("/detect_states")
-def detect_states():
-    data = request.get_json(force=True) or {}
-    policy = (data.get("policy") or "").strip()
-    if not policy:
-        return jsonify({"error": "policy text required"}), 400
-
-    auto = state_detector.detect_states_from_text(policy)
-    applicable = state_detector.applicable_laws(
-        [s["id"] for s in auto["detected"]], LAWS
-    )
-    return jsonify({
-        "auto_detection": auto,
-        "applicable_laws": applicable,
-    })
-
-
-# ---------------------------------------------------------------
-# NEW: /manufacturer_history — timestamps + previous policy versions
-# ---------------------------------------------------------------
-@app.get("/manufacturer_history")
-def manufacturer_history():
-    iri = request.args.get("iri")
-    if not iri:
-        return jsonify({"error": "missing iri"}), 400
-    hist = ts.get_policy_history(g, URIRef(iri), POLICY_PROP)
-    return jsonify(hist)
-
-
-# ---------------------------------------------------------------
-# NEW: /upload_regulation — Step 1 exposed as an endpoint
-# ---------------------------------------------------------------
-@app.post("/upload_regulation")
-def upload_regulation():
-    """
-    Accept a regulation PDF + metadata and run the Step 1 pipeline
-    against the live ontology graph.
-    """
-    if "file" not in request.files:
-        return jsonify({"error": "No file field found."}), 400
-    f = request.files["file"]
-    law_id = (request.form.get("law_id") or "").strip()
-    law_label = (request.form.get("law_label") or "").strip()
-
-    if not f or not f.filename:
-        return jsonify({"error": "No file selected."}), 400
-    if not allowed_file(f.filename):
-        return jsonify({"error": "Only PDF files are allowed."}), 400
-    if not law_id or not law_label:
-        return jsonify({"error": "law_id and law_label are required."}), 400
-
-    filename = secure_filename(f.filename)
-    path = os.path.join(app.config["UPLOAD_FOLDER"], filename)
-    f.save(path)
-
-    try:
-        text = reg_add.read_pdf_text(path)
-        sm = SentenceTransformer("all-MiniLM-L6-v2")
-        matched, new_candidates = reg_add.extract_candidate_classes(text, sm)
-
-        base_iri = str(MANUFACTURER_CLS).split("#")[0] + "#"
-        annotated, created = [], []
-
-        for m in matched:
-            existing = reg_add.find_existing_class(g, m["label"])
-            if existing is not None:
-                reg_add.annotate_existing_class(g, existing, law_label, m["example_sentences"])
-                annotated.append(m["label"])
-
-        for n in new_candidates:
-            if reg_add.find_existing_class(g, n["label"]) is not None:
-                continue
-            reg_add.create_new_class(g, base_iri, n["label"], law_label, n["example_sentences"])
-            created.append(n["label"])
-
-        # Register the law in config.json if new
-        reg_add.register_law_in_config(
-            "config.json", law_id, law_label, [law_label, law_id.replace("_", " ")]
-        )
-
-        g.serialize(destination=str(ONTO_PATH), format="xml")
-
-        return jsonify({
-            "law_id": law_id,
-            "law_label": law_label,
-            "classes_annotated": annotated,
-            "classes_created": created,
-        })
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-    finally:
-        try: os.remove(path)
-        except Exception: pass
-
-
-# ---------------------------------------------------------------
-# NEW: /update_regulation — Step 4b
-# ---------------------------------------------------------------
-@app.post("/update_regulation")
-def update_regulation_route():
-    """
-    JSON body:
-      {
-        "law_id": "OR_HB_2395",
-        "law_label": "Oregon HB 2395",
-        "new_version": "2026-amendment",
-        "updated_classes": [
-           {"label": "Data Breach",
-            "snippet": "Updated text mentioning 30-day notification."}
-        ]
-      }
-    """
-    data = request.get_json(force=True) or {}
-    required = ["law_id", "law_label", "new_version", "updated_classes"]
-    if not all(k in data for k in required):
-        return jsonify({"error": f"Required: {required}"}), 400
-
-    base_iri = str(MANUFACTURER_CLS).split("#")[0] + "#"
-    result = reg_update.update_regulation(
-        g, base_iri,
-        law_label=data["law_label"],
-        law_id=data["law_id"],
-        new_version=data["new_version"],
-        updated_classes=data["updated_classes"],
-    )
-    try:
-        g.serialize(destination=str(ONTO_PATH), format="xml")
-    except Exception as e:
-        return jsonify({"error": f"Graph updated in memory but not saved: {e}", **result}), 500
-    return jsonify(result)
-
-
-# ---------------------------------------------------------------
-# /extract_pdf — extract text and run agentic analysis
-# ---------------------------------------------------------------
-@app.post("/extract_pdf")
-def extract_pdf():
-    if "file" not in request.files:
-        return jsonify({"error": "No file field found."}), 400
-    f = request.files["file"]
-    if not f or f.filename == "":
-        return jsonify({"error": "No file selected."}), 400
-    if not allowed_file(f.filename):
-        return jsonify({"error": "Only PDF files are allowed."}), 400
-    filename = secure_filename(f.filename)
-    path = os.path.join(app.config["UPLOAD_FOLDER"], filename)
-    f.save(path)
-    try:
-        reader = PdfReader(path)
-        texts = [page.extract_text() or "" for page in reader.pages]
-        extracted = "\n\n".join(t for t in texts if t.strip()).strip()
-    except Exception as e:
-        return jsonify({"error": f"Failed to read PDF: {e}"}), 500
-    finally:
-        try: os.remove(path)
-        except Exception: pass
-    if not extracted:
-        return jsonify({"error": "No text could be extracted from that PDF."}), 200
-    # Agentic analysis: classify and segment the document
-    analysis = analyze_policy_document(extracted)
-    return jsonify({"text": extracted, "analysis": analysis}), 200
-@app.get("/detail")
-def detail():
-    iri = request.args.get("iri")
-    state = request.args.get("state", "all")
-
-    if not iri:
-        return jsonify({"error": "missing iri"}), 400
-
-    match = next((m for m in manufacturers if m["iri"] == iri), None)
-    if not match:
-        inst = URIRef(iri)
-        labels = [str(o) for o in g.objects(inst, RDFS.label)]
-        name = clean_manufacturer_name(labels[0]) if labels else clean_manufacturer_name(local_name(iri))
-        policies = [str(o) for o in g.objects(inst, POLICY_PROP) if isinstance(o, Literal)]
-        policy = max(policies, key=len) if policies else ""
-        match = {"iri": iri, "name": name, "policy": policy}
-
-    top_classes, sims = rank_classes_for_policy(match["policy"], state)
-    law_coverage, missing_laws, overall_percent = compute_law_coverage(sims, state)
-    missing_classes = compute_missing_classes(sims, state)
-
-    # SWRL hybrid tiers for top classes
-    swrl_covered = get_swrl_covered_classes(iri)
-    for cls in top_classes:
-        bert_covered = True  # already above threshold to be in top_classes
-        swrl_decision = cls["class_iri"] in swrl_covered
-        cls["hybrid"] = get_hybrid_tier(bert_covered, swrl_decision)
-
-    # SPARQL auto-validation — runs on every detail call
-    sparql_validation = sparql_validate_manufacturer(iri, sims)
-
-    return jsonify({
-        "iri": match["iri"],
-        "name": match["name"],
-        "policy": match["policy"],
-        "suggested_classes": top_classes,
-        "law_coverage": law_coverage,
-        "missing_laws": missing_laws,
-        "missing_classes": missing_classes,
-        "overall_coverage": overall_percent,
-        "sparql_validation": sparql_validation,
-        "swrl_active": SWRL_ACTIVE,
-    })
-
-def analyze_policy_document(text: str) -> dict:
-
-    prompt = f"""
-Classify the document AND extract policy segments.
-
-Return JSON:
-{{
-  "document_type": "...",
-  "manufacturer_name": "...",
-  "confidence": "...",
-  "segments": [
-    {{
-      "category": "...",
-      "excerpt": "...",
-      "confidence": "..."
-    }}
-  ]
-}}
-
-Document (first 3000 chars):
-{text[:3000]}
-"""
-
-    try:
-        resp = groq_client.chat.completions.create(
-            model="llama-3.1-8b-instant",
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.1,
-            max_tokens=800,
-        )
-
-        raw = resp.choices[0].message.content.strip()
-        raw = raw.replace("```json", "").replace("```", "").strip()
-
-        return json.loads(raw)
-
-    except Exception as e:
-        return {"error": str(e)}
-
-@app.get("/sparql_validate_all")
-def sparql_validate_all():
-    """
-    Run SPARQL vs BERT cross-validation for ALL manufacturers.
-    Use this to generate your paper's agreement rate table.
-    """
-    results = []
-    for m in manufacturers:
-        _, sims = rank_classes_for_policy(m["policy"], "all")
-        if sims is None:
-            continue
-        result = sparql_validate_manufacturer(m["iri"], sims)
-        result["name"] = m["name"]
-        results.append(result)
-
-    # Compute overall agreement rate across all manufacturers
-    total_pairs = sum(r["total_pairs"] for r in results)
-    total_agreed = sum(r["agreed"] for r in results)
-    overall_rate = round(
-        100.0 * total_agreed / total_pairs, 2
-    ) if total_pairs > 0 else 0.0
-
-    return jsonify({
-        "overall_agreement_rate": overall_rate,
-        "total_pairs_evaluated": total_pairs,
-        "total_agreed": total_agreed,
-        "manufacturers": results
-    }), 200
-
-# ------------------------------------------------------------------aliases--------------------------------------------------------------------------
-def expand_question_with_aliases(question: str) -> str:
-    """Expand user questions with domain-specific aliases."""
-    aliases = {
-        # Password & Authentication
-        "password": "password authentication credential login unique default",
-        "login": "login authentication credential password access",
-        "credential": "credential password authentication login",
-        "auth": "authentication credential password login verification",
-        
-        # Updates & Patching
-        "update": "update patch upgrade firmware software maintenance",
-        "patch": "patch update upgrade fix software",
-        "upgrade": "upgrade update patch firmware software",
-        
-        # Encryption & Security
-        "encryption": "encryption encrypted secure crypto cryptographic protect",
-        "encrypt": "encryption encrypted secure crypto cryptographic",
-        "secure": "secure security encryption encrypted protection",
-        "security": "security cybersecurity protection secure safe mechanism",
-        
-        # Data & Privacy
-        "data protection": "data protection privacy security information safeguard compliance",
-        "data privacy": "data privacy protection information personal confidential",
-        "personal data": "personal data privacy information user sensitive",
-        "data collection": "data collection gathering information privacy personal",
-        "data": "data information privacy collection personal user",
-        "privacy": "privacy data information personal protection collection",
-        "personal protection": "personal data privacy information user",
-        "collection": "collection data information gathering privacy",
-        "protection": "protection security safeguard privacy data secure",
-        
-        # Network & Communication
-        "network": "network communication interface connectivity protocol",
-        "communication": "communication network interface connectivity protocol",
-        "interface": "interface network communication connectivity",
-        
-        # Device & IoT
-        "device": "device iot connected smart thing sensor transducer",
-        "iot": "iot device connected smart internet things",
-        "sensor": "sensor device transducer iot measurement",
-        "smart": "smart iot device connected intelligent",
-        
-        # Access & Control
-        "access control": "access control permission authorization authentication security",
-        "access": "access control permission authorization authentication",
-        "control": "control access management permission authorization",
-    }
-    
-    expanded = question.lower()
-    
-    # Sort by length (longest first) to match multi-word phrases before single words
-    sorted_keys = sorted(aliases.keys(), key=len, reverse=True)
-    
-    for key in sorted_keys:
-        if key in expanded:
-            expanded += " " + aliases[key]
-    
-    return expanded
-
-#111 covers multi questions
-def detect_question_intent(question: str) -> str:
-    #Uses the LLM to semantically classify the question into one of theretrieval 
-    #intents 
-    #Intents: compare, missing, score, explain, lookup, general kg, class search
-      
-    prompt = f"""Classify this IoT privacy compliance question into exactly one intent label.
-Intents:
-- compare: user wants to compare manufacturers, products, or policies against each other
-- missing: user asks about gaps, failures, weaknesses, what's lacking or needs improvement
-- score: user wants a compliance score, rating, percentage, or overall assessment
-- explain: user wants a definition, explanation, or description of a concept or requirement
-- law_lookup: user asks which laws apply, what a specific regulation requires, or legal coverage
-- general_kg: user asks about the knowledge graph itself (how many manufacturers, what laws exist, etc.)
-- class_search: anything else — specific feature questions, policy details, data practices
-Question: "{question}"
-Reply with only the intent label, nothing else."""
-
-    try:
-        resp = groq_client.chat.completions.create(
-            model="llama-3.1-8b-instant",
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.0,
-            max_tokens=10,
-        )
-        label = resp.choices[0].message.content.strip().lower()
-        valid = {"compare", "missing", "score", "explain", "law_lookup", "general_kg", "class_search"}
-        return label if label in valid else "class_search"
-    except Exception:
-        return "class_search"  # safe fallback
-
-
-
-
-#--#--#--!
-# ── KG RETRIEVAL LAYER ──────────────────────────────────────────────────────
-# These helpers run live SPARQL queries against the graph so the LLM receives
-# actual ontology content (descriptions, law annotation text, triples)
-def _sparql_class_descriptions(class_iri_list: list[str]) -> dict[str, str]:
-    """
-    For each class IRI, pull rdfs:comment + any law-annotation predicate text
-    out of the graph and return {iri: combined_text}.
-    """
-    results = {}
-    for c_iri in class_iri_list:
-        node = URIRef(c_iri)
-        parts = []
-        for obj in g.objects(node, RDFS.comment):
-            parts.append(str(obj))
-        for pred in LAW_PREDICATES:
-            for obj in g.objects(node, pred):
-                parts.append(str(obj))
-        if parts:
-            results[c_iri] = " ".join(parts)[:400]   # cap per-class text
-    return results
-
-
-def _sparql_manufacturer_triples(manufacturer_iri: str) -> list[str]:
-    """
-    Pull all non-trivial triples where the manufacturer is the subject.
-    Returns human-readable strings like "Ring rdf:type SecurityCamera".
-    """
-    inst = URIRef(manufacturer_iri)
-    skip_preds = {RDF.type, RDFS.label, POLICY_PROP, USER_ADDED_PROP,
-                  APPLIES_TO_STATE_PROP}
-    lines = []
-    for pred, obj in g.predicate_objects(inst):
-        if pred in skip_preds:
-            continue
-        pred_name = local_name(str(pred))
-        obj_name  = local_name(str(obj)) if isinstance(obj, URIRef) else str(obj)[:120]
-        lines.append(f"{pred_name}: {obj_name}")
-    return lines[:20]   # cap to avoid flooding the prompt
-
-
-def _sparql_law_annotation_text(law_id: str) -> list[str]:
-    """
-    For a given law id (e.g. 'CCPA'), find all classes annotated with that
-    law's keywords and return their annotation snippets (up to 6 classes).
-    """
-    law = next((l for l in LAWS if l["id"] == law_id), None)
-    if not law:
-        return []
-    snippets = []
-    for c_iri in class_iris:
-        if law_id not in class_to_laws.get(c_iri, set()):
-            continue
-        node = URIRef(c_iri)
-        for pred in LAW_PREDICATES:
-            for obj in g.objects(node, pred):
-                text = str(obj)
-                segs = extract_law_segments(text)
-                for seg_list in segs.values():
-                    snippets.extend(seg_list[:2])
-        if len(snippets) >= 12:
-            break
-    return snippets[:12]
-
-
-def query_kg_for_question(
-    question: str,
-    intent: str,
-    manufacturer_iri: str,
-    sims,
-) -> dict:
-    """
-    Intent-driven KG retrieval.  Returns a dict with whatever raw graph data
-    is most relevant to the question so build_kg_context can include it.
-
-    Keys returned (all optional, may be empty):
-      class_descriptions  : {label: description_text}  for top similar classes
-      manufacturer_triples: [string, ...]               direct triples from KG
-      law_snippets        : {law_label: [snippet, ...]} annotation text per law
-      related_classes     : [label, ...]                classes linked via KG
-    """
-    kg_data: dict = {
-        "class_descriptions":   {},
-        "manufacturer_triples": [],
-        "law_snippets":         {},
-        "related_classes":      [],
-    }
-
-    # ── Always: top-K class descriptions from the graph ──────────────────
-    TOP_K_RETRIEVAL = 8
-    top_idxs = sorted(
-        range(len(class_iris)),
-        key=lambda i: sims[i],
-        reverse=True
-    )[:TOP_K_RETRIEVAL]
-
-    top_iris   = [class_iris[i]  for i in top_idxs]
-    top_labels = [class_labels[i] for i in top_idxs]
-    desc_map   = _sparql_class_descriptions(top_iris)
-    for iri, label in zip(top_iris, top_labels):
-        if iri in desc_map:
-            kg_data["class_descriptions"][label] = desc_map[iri]
-
-    # ── Always: manufacturer's own triples from KG ────────────────────────
-    kg_data["manufacturer_triples"] = _sparql_manufacturer_triples(
-        manufacturer_iri
-    )
-
-    # ── Intent-specific: law annotation text ─────────────────────────────
-    if intent in ("law_lookup", "missing", "score", "explain"):
-        # Pull annotation text for every law that has classes above threshold
-        covered_law_ids = set()
-        for i, score in enumerate(sims):
-            if float(score) >= COVERAGE_THRESHOLD:
-                covered_law_ids.update(class_to_laws.get(class_iris[i], set()))
-        for lid in list(covered_law_ids)[:3]:   # cap at 3 laws
-            law_obj = next((l for l in LAWS if l["id"] == lid), None)
-            if law_obj:
-                snippets = _sparql_law_annotation_text(lid)
-                if snippets:
-                    kg_data["law_snippets"][law_obj["label"]] = snippets
-
-    # ── Intent-specific: classes directly linked in the KG (subClassOf etc) ──
-    if intent in ("explain", "class_search"):
-        inst = URIRef(manufacturer_iri)
-        linked = set()
-        # rdf:type chains
-        for cls in g.objects(inst, RDF.type):
-            for sub in g.subjects(RDFS.subClassOf, cls):
-                linked.add(local_name(str(sub)))
-            linked.add(local_name(str(cls)))
-        kg_data["related_classes"] = [
-            l for l in linked
-            if l.lower() not in {"thing", "namedindividual", ""}
-        ][:10]
-
-    return kg_data
-
-
-def build_kg_context(question: str, manufacturer: dict, sims, intent: str = "class_search") -> str:
-    """
-    KG-grounded context builder.
-    Runs live SPARQL retrieval then merges those results with similarity
-    scores so the LLM sees ontology content
-    """
-    name = manufacturer["name"]
-    iri  = manufacturer["iri"]
-
-    # ── Live KG retrieval ────────────────────────────────────────────────
-    kg_data = query_kg_for_question(question, intent, iri, sims)
-
-    # ── Compliance metrics (unchanged) ───────────────────────────────────
-    law_coverage, _, overall = compute_law_coverage(sims, "all")
-    coverage_summary = [
-        f"{lc['label']}: {lc['coverage_percent']}%"
-        for lc in law_coverage
-    ]
-
-    # ── Missing classes ───────────────────────────────────────────────────
-    missing = compute_missing_classes(sims, "all")
-    missing_summary = [
-        f"{m['class_label']} ({m['law_label']})"
-        for m in missing[:8]
-    ]
-
-    # ── Assemble prompt context ───────────────────────────────────────────
-    sections = [f"Manufacturer: {name}"]
-
-    # Scores
-    sections.append(
-        f"Overall compliance score: {overall}%\n"
-        f"Coverage by law: {', '.join(coverage_summary)}"
-    )
-
-    # Missing areas
-    if missing_summary:
-        sections.append(
-            "Missing or weak regulatory areas:\n" +
-            "\n".join(f"  - {m}" for m in missing_summary)
-        )
-
-    # KG class descriptions (actual ontology content)
-    if kg_data["class_descriptions"]:
-        desc_lines = []
-        for label, desc in kg_data["class_descriptions"].items():
-            desc_lines.append(f"  [{label}]: {desc}")
-        sections.append(
-            "Relevant regulatory class definitions (from knowledge graph):\n" +
-            "\n".join(desc_lines)
-        )
-
-    # Manufacturer triples from KG
-    if kg_data["manufacturer_triples"]:
-        sections.append(
-            "Knowledge graph facts about this manufacturer:\n" +
-            "\n".join(f"  - {t}" for t in kg_data["manufacturer_triples"])
-        )
-
-    # Law annotation snippets
-    if kg_data["law_snippets"]:
-        for law_label, snippets in kg_data["law_snippets"].items():
-            sections.append(
-                f"Regulatory text from {law_label} (from knowledge graph):\n" +
-                "\n".join(f"  • {s}" for s in snippets[:5])
-            )
-
-    # KG-linked related classes
-    if kg_data["related_classes"]:
-        sections.append(
-            "Related ontology classes (KG structure): " +
-            ", ".join(kg_data["related_classes"])
-        )
-
-    return "\n\n".join(sections)
-
-
-groq_client = Groq(api_key=os.environ.get("GROQ_API_KEY", "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"))
+_fil = [m for m in manufacturers if m["user_added"] or any(a.lower() in m["name"].lower() for a in _ALLOWED)]
+manufacturers = _fil if _fil else manufacturers
+print(f"[init] {len(manufacturers)} manufacturers")
+
+# =============================================================================
+# GROQ + WGRADER
+# =============================================================================
+groq_client = Groq(api_key=os.environ.get("GROQ_API_KEY",
+    "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"))
 
 wgrader.init_grader(
     groq_client=groq_client, manufacturers=manufacturers,
     class_iris=class_iris, class_labels=class_labels,
     class_descs=class_descs, class_to_laws=class_to_laws,
     law_to_class_idxs=law_to_class_idxs, LAWS=LAWS,
-    COVERAGE_THRESHOLD=COVERAGE_THRESHOLD,
-    rank_classes_for_policy=rank_classes_for_policy,
+    COVERAGE_THRESHOLD=THRESHOLD,
+    rank_classes_for_policy=lambda p, s="all": ([], None),
     state_detector=state_detector,
 )
 
-#--#--# reads relevent raw tripels
-def ask_llm(question: str, kg_context: str) -> str:
+# =============================================================================
+# CORE SCORING  —  single function used by BOTH /detail AND /chat
+# =============================================================================
+def _active_laws(state):
+    if state == "all":
+        return LAWS
+
+    # Direct single-law filters used by the frontend for NISTIR and Public Law.
+    # This prevents a NISTIR-only question from being expanded to every federal law.
+    direct_law_ids = {l["id"] for l in LAWS}
+    if state in direct_law_ids:
+        return [l for l in LAWS if l["id"] == state]
+
+    ids = {l["id"] for l in state_detector.applicable_laws([state], LAWS)}
+    return [l for l in LAWS if l["id"] in ids]
+
+
+def compute_scores(policy, state):
+    """
+    Returns dict:
+      sims         np.ndarray | None
+      law_coverage list[{id, label, coverage_percent, num_classes, num_above}]
+      overall      float
+      covered      list[{class_label, law_labels, bert_sim, desc, annotation}]
+      missing      list[{class_label, law_label, bert_sim, gap, desc, annotation}]
+      weighted     dict | None  (from wgrader cache)
+    """
+    if not (policy or "").strip():
+        return {"sims": None, "law_coverage": [], "overall": 0.0,
+                "covered": [], "missing": [], "weighted": None}
+
+    q_emb = _bert.encode([policy], convert_to_numpy=True, normalize_embeddings=True)[0]
+    sims  = np.dot(class_embeddings, q_emb)
+
+    active     = _active_laws(state)
+    active_ids = {l["id"] for l in active}
+
+    # Flat coverage per law
+    law_coverage, total_cls, total_above = [], 0, 0
+    for law in active:
+        lid  = law["id"]
+        idxs = law_to_class_idxs.get(lid, [])
+        if not idxs:
+            law_coverage.append({"id": lid, "label": law["label"],
+                                  "coverage_percent": 0.0, "num_classes": 0, "num_above": 0})
+            continue
+        above = sum(1 for i in idxs if float(sims[i]) >= THRESHOLD)
+        pct   = round(100.0 * above / len(idxs), 2)
+        law_coverage.append({"id": lid, "label": law["label"],
+                              "coverage_percent": pct, "num_classes": len(idxs), "num_above": above})
+        total_cls += len(idxs); total_above += above
+    overall = round(100.0 * total_above / total_cls, 2) if total_cls else 0.0
+
+    # Covered classes
+    covered = []
+    for idx, sim in enumerate(sims):
+        sim = float(sim)
+        if sim < THRESHOLD:
+            continue
+        c_iri = class_iris[idx]
+        law_ids = class_to_laws.get(c_iri, set()) & active_ids
+        if not law_ids:
+            continue
+        covered.append({
+            "class_label": class_labels[idx],
+            "law_labels":  [l["label"] for l in LAWS if l["id"] in law_ids],
+            "bert_sim":    round(sim, 4),
+            "desc":        class_descs.get(c_iri, ""),
+            "annotation":  _annotation(URIRef(c_iri)),
+        })
+    covered.sort(key=lambda x: x["bert_sim"], reverse=True)
+
+    # Missing classes — pull annotation text per law from KG
+    missing = []
+    for law in active:
+        lid = law["id"]
+        for idx in law_to_class_idxs.get(lid, []):
+            sim = float(sims[idx])
+            if sim >= THRESHOLD:
+                continue
+            c_iri = class_iris[idx]
+            node  = URIRef(c_iri)
+            ann_parts = []
+            for pred in LAW_PREDS:
+                for obj in g.objects(node, pred):
+                    raw = str(obj)
+                    if any(kw.lower() in raw.lower() for kw in law.get("keywords", [])):
+                        ann_parts.append(raw.strip())
+                        break
+            missing.append({
+                "class_label": class_labels[idx],
+                "law_label":   law["label"],
+                "bert_sim":    round(sim, 4),
+                "gap":         round(THRESHOLD - sim, 4),
+                "desc":        class_descs.get(c_iri, ""),
+                "annotation":  " | ".join(ann_parts[:2]),
+            })
+    missing.sort(key=lambda x: x["gap"], reverse=True)
+
+    # Weighted score from cache (do NOT run agents here; use /weighted_grade_trigger)
+    weighted = None
     try:
-        response = groq_client.chat.completions.create(
-            model="llama-3.1-8b-instant", 
-            messages=[
-                {
-                    "role": "system",
-                    "content": (
-                        "You are an IoT privacy compliance assistant. "
-                        "You are given structured data pulled directly from a compliance knowledge graph, "
-                        "including regulatory class definitions, law annotation text, ontology triples, "
-                        "and similarity-based compliance scores.\n"
-                        "- Answer using the knowledge graph data provided — prefer class definitions "
-                        "and regulatory text over scores alone when they are relevant\n"
-                        "- Max 4 sentences\n"
-                        "- Plain English, no IRIs or technical graph jargon\n"
-                        "- If the KG data does not contain enough information to answer, say so clearly\n"
-                    )
-                },
-                {
-                    "role": "user",
-                    "content": f"""
-DATA:
-{kg_context}
+        from step3_agentic_weighted_grader import (_cache_key, _weight_cache,
+                                                   _get_active_laws, agent3_weighted_grader)
+        al = _get_active_laws(state)
+        ck = _cache_key([l["id"] for l in al])
+        if ck in _weight_cache:
+            weighted = agent3_weighted_grader(
+                {"name": "?", "policy": policy}, sims, _weight_cache[ck], al, state)
+    except Exception:
+        pass
 
-QUESTION:
-{question}
-
-Answer simply:
-"""
-                }
-            ],
-            temperature=0.2,
-            max_tokens=200,
-        )
-
-        return response.choices[0].message.content.strip()
+    return {"sims": sims, "law_coverage": law_coverage, "overall": overall,
+            "covered": covered, "missing": missing, "weighted": weighted}
 
 
+# =============================================================================
+# CHAT CONTEXT — built from compute_scores(), reads KG directly
+# =============================================================================
+def _trim(text, n=260):
+    text = re.sub(r"\s+", " ", (text or "")).strip()
+    return text if len(text) <= n else text[:n].rstrip() + "..."
 
+
+def _law_annotation_for_class(c_iri, law):
+    """Return only the rdfs:hasLaw-style annotation text that belongs to one law."""
+    node = URIRef(c_iri)
+    hits = []
+    keywords = [law.get("label", ""), law.get("id", "").replace("_", " ")] + law.get("keywords", [])
+    keywords = [k.lower() for k in keywords if k]
+    for pred in LAW_PREDS:
+        for obj in g.objects(node, pred):
+            raw = str(obj).strip()
+            low = raw.lower()
+            if any(k in low for k in keywords):
+                hits.append(raw)
+    return " | ".join(dict.fromkeys(hits))
+
+
+def _section_hint(text):
+    """Best-effort section/reference extraction from KG law annotation text."""
+    if not text:
+        return "No section identifier found in KG annotation"
+    patterns = [
+        r"(?:section|sec\.|§)\s*[0-9A-Za-z_.:-]+",
+        r"ORS\s*[0-9A-Za-z_.:-]+",
+        r"Cal\.?\s+Civ\.?\s+Code\s*§?\s*[0-9A-Za-z_.:-]+",
+        r"NISTIR\s*8259(?:A)?",
+        r"PL\s*116-207|Public Law\s*116-207",
+        r"HB\s*2395|SB-327|HB\s*4",
+    ]
+    for pat in patterns:
+        m = re.search(pat, text, flags=re.I)
+        if m:
+            return m.group(0)
+    return "No section identifier found in KG annotation"
+
+
+def law_rules_from_kg(laws=None):
+    """Build a clean law -> rule/class list directly from rdfs:hasLaw annotations."""
+    laws = laws or LAWS
+    out = {}
+    for law in laws:
+        rules = []
+        for idx in law_to_class_idxs.get(law["id"], []):
+            c_iri = class_iris[idx]
+            ann = _law_annotation_for_class(c_iri, law)
+            rules.append({
+                "class_label": class_labels[idx],
+                "section_hint": _section_hint(ann),
+                "annotation": ann or class_descs.get(c_iri, ""),
+            })
+        # de-duplicate by class label while preserving order
+        seen = set()
+        clean = []
+        for r in rules:
+            key = r["class_label"].lower()
+            if key not in seen:
+                seen.add(key)
+                clean.append(r)
+        out[law["id"]] = {"id": law["id"], "label": law["label"], "rules": clean}
+    return out
+
+
+def law_comparison_from_kg(laws=None):
+    """Return Law A has X / Law B has Y / common Z based on KG law annotations."""
+    rules_by_law = law_rules_from_kg(laws)
+    label_to_laws = {}
+    for lid, law_data in rules_by_law.items():
+        for r in law_data["rules"]:
+            label_to_laws.setdefault(r["class_label"], set()).add(lid)
+
+    common = sorted([lbl for lbl, lids in label_to_laws.items() if len(lids) >= 2])
+    unique = {}
+    for lid, law_data in rules_by_law.items():
+        unique[lid] = sorted([
+            r["class_label"] for r in law_data["rules"]
+            if len(label_to_laws.get(r["class_label"], set())) == 1
+        ])
+
+    return {"rules_by_law": rules_by_law, "common_rules": common, "unique_rules": unique}
+
+
+def _explicit_laws_from_question(question):
+    """Return only laws explicitly named/aliased in the user's question."""
+    q = (question or "").lower()
+    wanted = []
+    for law in LAWS:
+        if law.get("id", "").lower() in q or law.get("label", "").lower() in q:
+            wanted.append(law)
+            continue
+        aliases = {
+            "OR_HB_2395": ["oregon", "hb 2395", "oregon hb"],
+            "CA_SB_327": ["california", "sb-327", "sb 327"],
+            "TX_HB_4": ["texas", "hb 4", "tx hb"],
+            "IoT_Cyber_Act_2020": ["iot cybersecurity", "iot cybersecurity improvement", "pl 116-207", "pl 116 207", "public law", "plaw", "federal"],
+            "NISTIR_8259": ["nist", "nistir", "8259"],
+        }.get(law.get("id", ""), [])
+        if any(a in q for a in aliases):
+            wanted.append(law)
+    return wanted
+
+
+def _wanted_laws_from_question(question, state="all"):
+    """Keep chat context small by only sending laws the user asked about."""
+    explicit = _explicit_laws_from_question(question)
+    if explicit:
+        return explicit
+    if state and state != "all":
+        return _active_laws(state)
+    return LAWS
+
+
+def _question_intent(question):
+    q = (question or "").lower()
+    return {
+        "comparison": any(w in q for w in ["compare", "difference", "different", "common", "overlap", "versus", " vs ", "same"]),
+        "rules": any(w in q for w in ["rules", "rule", "requirements", "classes", "make up", "specified", "legislation annotations"]),
+        "missing": any(w in q for w in ["missing", "non-compliant", "non compliant", "does not comply", "fails", "gap", "weakly"]),
+        "score": any(w in q for w in ["score", "coverage", "percent", "grade"]),
+    }
+
+
+def build_chat_context(mfg, scores, state, question=""):
+    """
+    Small, intent-aware context for Groq's 6k TPM limit.
+    Instead of always sending every hasLaw annotation, only send the sections
+    needed for the user's question.
+    """
+    name    = mfg["name"]
+    covered = scores["covered"]
+    missing = scores["missing"]
+    lc      = scores["law_coverage"]
+    overall = scores["overall"]
+    w       = scores["weighted"]
+    scope   = state if state != "all" else "all regulations"
+    intent  = _question_intent(question)
+    wanted_laws = _wanted_laws_from_question(question, state)
+    explicit_laws_for_context = _explicit_laws_from_question(question)
+    wanted_law_ids = {law["id"] for law in wanted_laws}
+    wanted_law_labels = {law["label"] for law in wanted_laws}
+
+    # Default to the most useful context when the question is vague.
+    if not any(intent.values()):
+        intent["score"] = True
+        intent["missing"] = True
+
+    out = [f"Manufacturer: {name} | Active compliance scope: {scope}"]
+
+    if intent["score"] or intent["missing"]:
+        out.append("\nCompliance scores for the selected manufacturer:")
+        display_lc = [lw for lw in lc if not explicit_laws_for_context or lw.get("id") in wanted_law_ids or lw.get("label") in wanted_law_labels]
+        for lw in display_lc:
+            out.append(f"  {lw['label']}: {lw['coverage_percent']}% ({lw['num_above']}/{lw['num_classes']} requirements covered)")
+        if not explicit_laws_for_context:
+            out.append(f"  Overall flat coverage: {overall}%")
+            if w:
+                out.append(f"  Overall weighted: {w.get('overall_weighted_score','?')}% | Grade: {w.get('overall_grade','?')}")
+
+    # Law rules from KG: compact by default; annotations only for the requested law(s).
+    if intent["rules"]:
+        rules = law_rules_from_kg(wanted_laws)
+        out.append("\nRules found in the knowledge graph for the requested legislation:")
+        for law in wanted_laws:
+            law_data = rules.get(law["id"], {"rules": []})
+            out.append(f"  {law['label']} includes these requirements:")
+            for r in law_data["rules"][:25]:
+                ann = _trim(r.get("annotation", ""), 150)
+                out.append(f"    - Requirement name: {r['class_label']} | Legal text note: {ann}")
+
+    # Clean law comparison: only class names, no long annotations.
+    if intent["comparison"]:
+        compare_laws = wanted_laws if len(wanted_laws) >= 2 else LAWS
+        kg_compare = law_comparison_from_kg(compare_laws)
+        out.append("\nLegislation comparison based on rules in the knowledge graph:")
+        out.append("  Requirements shared by the requested laws: " + (", ".join(kg_compare["common_rules"][:40]) if kg_compare["common_rules"] else "None found"))
+        for law in compare_laws:
+            rules = kg_compare["rules_by_law"].get(law["id"], {}).get("rules", [])
+            unique = kg_compare["unique_rules"].get(law["id"], [])
+            out.append(f"  {law['label']} includes: " + (", ".join([r["class_label"] for r in rules[:25]]) if rules else "None found"))
+            out.append(f"  Requirements mainly found in {law['label']}: " + (", ".join(unique[:20]) if unique else "None found"))
+
+    # Missing details: for a specific law, include EVERY missing item for that law.
+    # For broad/all-regulation questions, keep a top-N fallback to avoid Groq TPM errors.
+    if intent["missing"]:
+        explicit_laws = explicit_laws_for_context
+        law_labels_filter = {law["label"] for law in explicit_laws}
+
+        if law_labels_filter:
+            missing_for_context = [m for m in missing if m.get("law_label") in law_labels_filter]
+            header_scope = ", ".join(sorted(law_labels_filter))
+            out.append(f"\nMissing requirements for the selected manufacturer policy — all items for {header_scope} ({len(missing_for_context)}):")
+        elif state and state != "all":
+            # compute_scores() is already scoped by state, so this is safe to show in full.
+            missing_for_context = missing
+            out.append(f"\nMissing requirements for the selected manufacturer policy — all items for the active filter ({len(missing_for_context)}):")
+        else:
+            missing_for_context = missing[:10]
+            out.append(f"\nMissing requirements for the selected manufacturer policy — top {min(len(missing), 10)} of {len(missing)}:")
+
+        for m in missing_for_context:
+            out.append(f"  ✗ Requirement name: {m['class_label']} | Law: {m['law_label']}")
+            if m.get("desc"):
+                out.append(f"    Plain meaning / requirement: {_trim(m['desc'], 180)}")
+            if m.get("annotation"):
+                out.append(f"    Legal text note from KG: {_trim(m['annotation'], 260)}")
+        if not missing_for_context:
+            out.append("  None — all requirements appear addressed for this law/filter.")
+
+    # Include a tiny covered sample only if useful and there is room.
+    if (intent["missing"] or intent["score"]) and covered:
+        covered_for_context = []
+        for c in covered:
+            law_labels = [label for label in c.get("law_labels", []) if not explicit_laws_for_context or label in wanted_law_labels]
+            if law_labels:
+                item = dict(c)
+                item["law_labels"] = law_labels
+                covered_for_context.append(item)
+        if covered_for_context:
+            out.append(f"\nCovered examples — top {min(len(covered_for_context), 6)}:")
+            for c in covered_for_context[:6]:
+                out.append(f"  ✓ Requirement name: {c['class_label']} | Law: {', '.join(c['law_labels'])}")
+
+    return "\n".join(out)
+
+
+# =============================================================================
+# LLM
+# =============================================================================
+SYSTEM_PROMPT = (
+    "You are a concise IoT privacy compliance assistant. "
+    "Answer only from the structured DATA provided from the knowledge graph. Never invent law sections, rules, or facts.\n\n"
+    "Rules:\n"
+    "• Do not print internal headings such as KG LAW COMPARISON, KG LEGISLATION RULES, DATA, or COMPLIANCE SCORES.\n"
+    "• Do not use phrases like gap score, section/reference, BERT, KG annotation, class IRI, or technical ontology terms in the final answer.\n"
+    "• When explaining legislation rules, translate each requirement name into natural language for a non-technical reader. Explain what the law is asking a company to do, not just the class name.\n"
+    "• When comparing two laws, answer naturally: first say what both laws share, then say what each law uniquely emphasizes. Do not use a rigid template or internal labels.\n"
+    "• For missing privacy-policy coverage, list every missing item provided in DATA. For each item, use about two plain-English sentences: what the law expects, and what the selected policy does not clearly say.\n"
+    "• Only reference the specific law or laws provided in the DATA. If only NISTIR 8259 is provided, do not mention Public Law 116-207 or any other federal law.\n"
+    "• Scores → one sentence, prefer weighted score when available. Nothing missing → one sentence, stop.\n"
+    "• Keep answers focused; usually under 300 words unless the user asks for all rules."
+)
+def _call_llm(question, context):
+    try:
+        resp = groq_client.chat.completions.create(
+            model="llama-3.1-8b-instant",
+            messages=[{"role": "system", "content": SYSTEM_PROMPT},
+                      {"role": "user",   "content": f"DATA:\n{context}\n\nQUESTION:\n{question}"}],
+            temperature=0.1, max_tokens=700)
+        return resp.choices[0].message.content.strip()
     except Exception as e:
-        return f"Chat error: {str(e)}"
+        return f"Error: {e}"
 
-from functools import lru_cache
+@lru_cache(maxsize=256)
+def _cached_llm(question, ctx_hash, context):
+    return _call_llm(question, context)
 
-@lru_cache(maxsize=100)
-def cached_llm(question, context):
-    return ask_llm(question, context)
+def ask_llm(question, context):
+    h = hashlib.md5(context.encode()).hexdigest()
+    return _cached_llm(question, h, context)
+
+
+# =============================================================================
+# HELPERS
+# =============================================================================
+def _gen_iri(name):
+    base = str(MFG_CLS).split("#")[0] + "#"
+    slug = re.sub(r"\W+", "_", name.strip()) or "Manufacturer"
+    cand = URIRef(base + slug)
+    i = 1
+    while (cand, None, None) in g:
+        cand = URIRef(base + f"{slug}_{i}"); i += 1
+    return cand
+
+def _find_mfg(name):
+    t = name.lower().strip()
+    return next((m for m in manufacturers if m["name"].lower().strip() == t), None)
+
+
+# =============================================================================
+# ROUTES
+# =============================================================================
+@app.get("/")
+def index():
+    return render_template("index.html")
+
+@app.get("/list")
+def list_mfg():
+    return jsonify([{"iri": m["iri"], "name": m["name"]} for m in manufacturers])
+
+
+@app.get("/detail")
+def detail():
+    """Returns flat + weighted scores, covered, missing classes — one payload."""
+    iri   = request.args.get("iri")
+    state = norm_state(request.args.get("state", "all"))
+    if not iri:
+        return jsonify({"error": "missing iri"}), 400
+
+    mfg = next((m for m in manufacturers if m["iri"] == iri), None)
+    if not mfg:
+        inst = URIRef(iri)
+        lbls = [str(o) for o in g.objects(inst, RDFS.label)]
+        pols = [str(o) for o in g.objects(inst, POLICY_PROP) if isinstance(o, Literal)]
+        mfg  = {"iri": iri,
+                "name":   clean_name(lbls[0] if lbls else local_name(iri)),
+                "policy": max(pols, key=len) if pols else ""}
+
+    scores = compute_scores(mfg["policy"], state)
+    return jsonify({
+        "iri":          mfg["iri"],
+        "name":         mfg["name"],
+        "policy":       mfg["policy"],
+        "state":        state,
+        "overall":      scores["overall"],
+        "law_coverage": scores["law_coverage"],
+        "covered":      scores["covered"],
+        "missing":      scores["missing"],
+        "weighted":     scores["weighted"],
+    })
 
 
 @app.post("/chat")
 def chat():
-
-    data = request.get_json(force=True) or {}
+    """Uses compute_scores() — same as /detail — so numbers always match."""
+    data     = request.get_json(force=True) or {}
     question = (data.get("question") or "").strip()
-    iri = (data.get("iri") or "").strip()
+    iri      = (data.get("iri") or "").strip()
+    state    = norm_state(data.get("state", "all"))
 
     if not question or not iri:
         return jsonify({"answer": "Please select a manufacturer and ask a question."}), 400
-
-    match = next((m for m in manufacturers if m["iri"] == iri), None)
-    if not match:
+    mfg = next((m for m in manufacturers if m["iri"] == iri), None)
+    if not mfg:
         return jsonify({"answer": "Manufacturer not found."}), 404
 
-    # Get BERT sims for this manufacturer
-    _, sims = rank_classes_for_policy(match["policy"], "all")
-    if sims is None:
-        return jsonify({"answer": "Could not analyze this manufacturer's policy."}), 500
+    scores  = compute_scores(mfg["policy"], state)
+    context = build_chat_context(mfg, scores, state, question)
+    answer  = ask_llm(question, context)
+    return jsonify({"answer": answer}), 200
 
-    # Detect intent so KG retrieval is targeted to the question type
-    expanded_q = expand_question_with_aliases(question)
-    intent = detect_question_intent(expanded_q)
 
-    # Build KG-grounded context (live SPARQL retrieval + similarity scores)
-    kg_context = build_kg_context(expanded_q, match, sims, intent=intent)
-    answer = cached_llm(question, kg_context)
+@app.post("/add_manufacturer")
+def add_manufacturer():
+    data      = request.get_json(force=True) or {}
+    name      = (data.get("name") or "").strip()
+    policy    = (data.get("policy") or "").strip()
+    sel_states = data.get("selected_states") or []
+    if not name or not policy:
+        return jsonify({"error": "name and policy required"}), 400
 
-#! this is the proof o fs sfource
-    return jsonify({
-        "answer": answer,
-        "show_card": False,
-        "data_source": f"inferred_merged.rdf  SWRL active: {SWRL_ACTIVE}, {len(g)} triples loaded",
-        "intent": intent,
-    }), 200
+    existing = _find_mfg(name)
+    inst_iri = URIRef(existing["iri"]) if existing else _gen_iri(name)
+    if not existing:
+        g.add((inst_iri, RDF.type, MFG_CLS))
+        g.add((inst_iri, RDFS.label, Literal(name)))
+        g.add((inst_iri, USER_ADDED_PROP, Literal(True)))
 
-@app.get("/compare")
-def compare():
-    iri1 = request.args.get("iri1")
-    iri2 = request.args.get("iri2")
-    state = request.args.get("state", "all")
+    ts_info = ts.upsert_policy(g, inst_iri, POLICY_PROP, policy)
+    auto    = state_detector.detect_states_from_text(policy)
+    states  = sel_states or [s["id"] for s in auto["detected"]]
 
-    m1 = next((m for m in manufacturers if m["iri"] == iri1), None)
-    m2 = next((m for m in manufacturers if m["iri"] == iri2), None)
+    for old in list(g.objects(inst_iri, APPLIES_TO_STATE_PROP)):
+        g.remove((inst_iri, APPLIES_TO_STATE_PROP, old))
+    for sid in states:
+        g.add((inst_iri, APPLIES_TO_STATE_PROP, Literal(sid)))
 
-    if not m1 or not m2:
-        return jsonify({"error": "One or both manufacturers not found"}), 404
+    entry = {"iri": str(inst_iri), "name": clean_name(name),
+             "policy": policy, "user_added": True}
+    if existing:
+        manufacturers[:] = [m for m in manufacturers if m["iri"] != str(inst_iri)]
+    manufacturers.append(entry)
+    manufacturers.sort(key=lambda m: m["name"].lower())
 
-    _, sims1 = rank_classes_for_policy(m1["policy"], state)
-    _, sims2 = rank_classes_for_policy(m2["policy"], state)
+    try:
+        g.serialize(destination=str(ONTO_PATH), format="xml")
+    except Exception as e:
+        return jsonify({"error": f"Memory OK, file write failed: {e}"}), 500
 
-    coverage1, _, overall1 = compute_law_coverage(sims1, state)
-    coverage2, _, overall2 = compute_law_coverage(sims2, state)
+    return jsonify({"iri": entry["iri"], "name": entry["name"],
+                    "action": ts_info["action"],
+                    "created_at": ts_info["created_at"],
+                    "modified_at": ts_info["modified_at"],
+                    "auto_detected_states": auto, "selected_states": states,
+                    "applicable_laws": state_detector.applicable_laws(states, LAWS),
+                    }), 200 if existing else 201
 
-    missing1 = compute_missing_classes(sims1, state)
-    missing2 = compute_missing_classes(sims2, state)
 
-    # Find classes one covers but the other doesn't
-    covered1_iris = {
-        class_iris[i] for i in range(len(class_iris))
-        if sims1 is not None and float(sims1[i]) >= COVERAGE_THRESHOLD
-    }
-    covered2_iris = {
-        class_iris[i] for i in range(len(class_iris))
-        if sims2 is not None and float(sims2[i]) >= COVERAGE_THRESHOLD
-    }
+@app.post("/extract_pdf")
+def extract_pdf():
+    if "file" not in request.files:
+        return jsonify({"error": "No file"}), 400
+    f = request.files["file"]
+    if not f or not allowed_file(f.filename):
+        return jsonify({"error": "PDF only"}), 400
+    path = os.path.join(app.config["UPLOAD_FOLDER"], secure_filename(f.filename))
+    f.save(path)
+    try:
+        text = "\n\n".join(p.extract_text() or "" for p in PdfReader(path).pages).strip()
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    finally:
+        try: os.remove(path)
+        except: pass
+    return jsonify({"text": text}), 200
 
-    m1_advantage = [
-        class_labels[class_iris.index(iri)]
-        for iri in covered1_iris - covered2_iris
-    ]
-    m2_advantage = [
-        class_labels[class_iris.index(iri)]
-        for iri in covered2_iris - covered1_iris
-    ]
 
-    return jsonify({
-        "manufacturer1": {
-            "name": m1["name"],
-            "overall": overall1,
-            "law_coverage": coverage1,
-            "missing_count": len(missing1),
-            "advantages_over_other": m1_advantage[:5]
-        },
-        "manufacturer2": {
-            "name": m2["name"],
-            "overall": overall2,
-            "law_coverage": coverage2,
-            "missing_count": len(missing2),
-            "advantages_over_other": m2_advantage[:5]
-        }
-    })
+@app.post("/upload_regulation")
+def upload_regulation():
+    f         = request.files.get("file")
+    law_id    = (request.form.get("law_id") or "").strip()
+    law_label = (request.form.get("law_label") or "").strip()
+    if not f or not allowed_file(f.filename) or not law_id or not law_label:
+        return jsonify({"error": "PDF, law_id, law_label required"}), 400
+    path = os.path.join(app.config["UPLOAD_FOLDER"], secure_filename(f.filename))
+    f.save(path)
+    try:
+        text  = reg_add.read_pdf_text(path)
+        sm    = SentenceTransformer(EMBED_MODEL)
+        matched, new_cands = reg_add.extract_candidate_classes(text, sm)
+        base  = str(MFG_CLS).split("#")[0] + "#"
+        annotated, created = [], []
+        for m in matched:
+            ex = reg_add.find_existing_class(g, m["label"])
+            if ex:
+                reg_add.annotate_existing_class(g, ex, law_label, m["example_sentences"])
+                annotated.append(m["label"])
+        for n in new_cands:
+            if not reg_add.find_existing_class(g, n["label"]):
+                reg_add.create_new_class(g, base, n["label"], law_label, n["example_sentences"])
+                created.append(n["label"])
+        reg_add.register_law_in_config("config.json", law_id, law_label,
+                                       [law_label, law_id.replace("_", " ")])
+        g.serialize(destination=str(ONTO_PATH), format="xml")
+        return jsonify({"annotated": annotated, "created": created})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    finally:
+        try: os.remove(path)
+        except: pass
+
+
+@app.post("/update_regulation")
+def update_regulation():
+    data = request.get_json(force=True) or {}
+    for k in ["law_id", "law_label", "new_version", "updated_classes"]:
+        if k not in data:
+            return jsonify({"error": f"Missing {k}"}), 400
+    base   = str(MFG_CLS).split("#")[0] + "#"
+    result = reg_update.update_regulation(g, base, **{k: data[k] for k in
+                ["law_label","law_id","new_version","updated_classes"]})
+    try:
+        g.serialize(destination=str(ONTO_PATH), format="xml")
+    except Exception as e:
+        return jsonify({"error": str(e), **result}), 500
+    return jsonify(result)
+
+
+@app.get("/manufacturer_history")
+def manufacturer_history():
+    iri = request.args.get("iri")
+    if not iri:
+        return jsonify({"error": "missing iri"}), 400
+    return jsonify(ts.get_policy_history(g, URIRef(iri), POLICY_PROP))
+
+
+@app.post("/detect_states")
+def detect_states():
+    data   = request.get_json(force=True) or {}
+    policy = (data.get("policy") or "").strip()
+    if not policy:
+        return jsonify({"error": "policy required"}), 400
+    auto = state_detector.detect_states_from_text(policy)
+    return jsonify({"auto_detection": auto,
+                    "applicable_laws": state_detector.applicable_laws(
+                        [s["id"] for s in auto["detected"]], LAWS)})
+
+
+@app.get("/weighted_grade_trigger")
+def weighted_grade_trigger():
+    """
+    Pre-warms the weighted score cache for a manufacturer.
+    Call once after selecting a manufacturer; /detail will use the cache.
+    GET /weighted_grade_trigger?iri=<iri>&state=all
+    """
+    iri   = request.args.get("iri")
+    state = norm_state(request.args.get("state", "all"))
+    if not iri:
+        return jsonify({"error": "missing iri"}), 400
+    mfg = next((m for m in manufacturers if m["iri"] == iri), None)
+    if not mfg:
+        return jsonify({"error": "not found"}), 404
+    try:
+        result = wgrader.run_weighted_grading(mfg, state, use_cache=False)
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
 
 if __name__ == "__main__":
     app.run(debug=True, port=5000)
