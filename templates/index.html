@@ -312,6 +312,17 @@
         .about-grid { grid-template-columns: 1fr; }
         .ribbon-logo { display: none; }
       }
+
+      /* ── Fix background gradient tiling/seam ──
+         The page gradient (defined in style.css) was repeating/tiling as the
+         page scrolled past one viewport height, producing a hard seam partway
+         down the page. Pinning it as a fixed, non-repeating, cover-sized
+         backdrop makes it span the whole page smoothly with no visible seam. */
+      html, body {
+        background-repeat: no-repeat !important;
+        background-attachment: fixed !important;
+        background-size: cover !important;
+      }
     </style>
   </head>
   <body>
@@ -390,19 +401,33 @@
           <input id="newName" type="text" placeholder="e.g., Apple"
                  style="width:100%; padding:6px 8px; margin-top:4px; border-radius:8px; border:1px solid var(--border);" />
         </div>
-        <div class="field" style="margin-top: 12px;">
-          <label for="newPolicy"><strong>Policy description</strong></label>
-          <textarea id="newPolicy" rows="4"
-            placeholder="Paste the relevant privacy policy text here"
-            style="width:100%; padding:6px 8px; margin-top:4px; border-radius:8px; border:1px solid var(--border);"></textarea>
+
+        <button id="btnAdd" style="margin-top: 12px;">Classify</button>
+        <div class="small muted" style="margin-top:8px;">
+          Type only the company name. The application will automatically find the official privacy policy statemnt online, and classify it.
         </div>
-        <div class="field" style="margin-top: 12px;">
-          <label for="pdfFile"><strong>Upload policy PDF (optional)</strong></label>
-          <input id="pdfFile" type="file" accept="application/pdf" style="display:block; margin-top:6px;" />
-          <button id="btnExtractPdf" type="button" style="margin-top:8px;">Extract text from PDF</button>
-          <div id="pdfStatus" class="small muted" style="margin-top: 6px;"></div>
-        </div>
-        <button id="btnAdd" style="margin-top: 12px;">Save Manufacturer</button>
+
+        <details id="policyFallbackDetails"
+          style="margin-top: 12px; background:#f8f9fa; border:1px solid #e0e0e0; border-radius:10px; padding:10px 12px;">
+          <summary style="cursor:pointer; font-weight:700; color:#1a1a2e;">
+            Privacy Policy Manual Import (Select If Not Available Online)
+          </summary>
+
+          <div class="field" style="margin-top: 12px;">
+            <label for="newPolicy"><strong>Policy description manual input</strong></label>
+            <textarea id="newPolicy" rows="4"
+              placeholder="Optional: paste policy text only if automatic discovery fails or if not available online.."
+              style="width:100%; padding:6px 8px; margin-top:4px; border-radius:8px; border:1px solid var(--border);"></textarea>
+          </div>
+
+          <div class="field" style="margin-top: 12px;">
+            <label for="pdfFile"><strong>Upload policy PDF</strong></label>
+            <input id="pdfFile" type="file" accept="application/pdf" style="display:block; margin-top:6px;" />
+            <button id="btnExtractPdf" type="button" style="margin-top:8px;">Extract text from PDF</button>
+            <div id="pdfStatus" class="small muted" style="margin-top: 6px;"></div>
+          </div>
+        </details>
+
         <div id="addStatus" class="small muted" style="margin-top: 8px;"></div>
       </div>
 
@@ -790,6 +815,11 @@
           return;
         }
 
+        const placeholder = document.createElement('option');
+        placeholder.value = '';
+        placeholder.textContent = '-- Select a manufacturer --';
+        sel.appendChild(placeholder);
+
         items.forEach(m => {
           const opt = document.createElement('option');
           opt.value = m.iri;
@@ -798,8 +828,8 @@
         });
 
         el('countNote').textContent = `${items.length} total manufacturer(s)`;
-        sel.value = items[0].iri;
-        loadDetail();
+        sel.value = '';
+        el('details').classList.add('hidden');
       }
 
       async function loadDetail() {
@@ -1089,46 +1119,71 @@
       }
 
       async function addManufacturer() {
-        const nameInput = el('newName');
-        const policyInput = el('newPolicy');
-        const statusEl = el('addStatus');
+  const nameInput = el('newName');
+  const policyInput = el('newPolicy');
+  const statusEl = el('addStatus');
 
-        if (!nameInput || !policyInput || !statusEl) {
-          return;
-        }
+  const name = nameInput.value.trim();
+  const fallbackPolicy = policyInput ? policyInput.value.trim() : "";
 
-        const name = nameInput.value.trim();
-        const policy = policyInput.value.trim();
-        statusEl.textContent = "";
+  statusEl.textContent = "";
 
-        if (!name || !policy) {
-          statusEl.textContent = "Please enter both a name and a policy description.";
-          return;
-        }
+  if (!name) {
+    statusEl.textContent = "Please enter a manufacturer name.";
+    return;
+  }
 
-        try {
-          const res = await fetch("/add_manufacturer", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ name, policy })
-          });
-          const data = await res.json();
+  try {
+    statusEl.textContent = "Finding official privacy policy online and saving manufacturer...";
 
-          if (!res.ok) {
-            statusEl.textContent = data.error || "Error adding manufacturer.";
-            return;
-          }
+    let res;
+    let data;
 
-          statusEl.textContent = `${data.name} added successfully.`;
-          nameInput.value = "";
-          policyInput.value = "";
-          await loadDropdown();
+    if (fallbackPolicy) {
+      // Manual fallback if user opened the fallback box and pasted policy text.
+      res = await fetch("/add_manufacturer", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name, policy: fallbackPolicy })
+      });
+    } else {
+      // Main name-only agentic flow.
+      res = await fetch("/auto_add_manufacturer", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name })
+      });
+    }
 
-        } catch (err) {
-          console.error(err);
-          statusEl.textContent = "Network/server error adding manufacturer.";
-        }
-      }
+    const raw = await res.text();
+    try {
+      data = JSON.parse(raw);
+    } catch (e) {
+      statusEl.textContent = `Server returned non-JSON response. HTTP ${res.status}: ${raw.slice(0, 300)}`;
+      return;
+    }
+
+    if (!res.ok) {
+      statusEl.textContent = data.error || "Error adding manufacturer.";
+      return;
+    }
+
+    statusEl.textContent = `${data.name} added and classified.`;
+    nameInput.value = "";
+    if (policyInput) policyInput.value = "";
+
+    await loadDropdown();
+
+    if (data.iri) {
+      el('manufacturerSelect').value = data.iri;
+      await loadDetail();
+    }
+
+  } catch (err) {
+    console.error(err);
+    statusEl.textContent = "Network/server error adding manufacturer.";
+  }
+}
 
       async function extractPdfToPolicy() {
         const fileInput = el('pdfFile');

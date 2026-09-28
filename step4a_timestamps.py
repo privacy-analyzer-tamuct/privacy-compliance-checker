@@ -10,11 +10,11 @@ What this module does:
         * the NEW policy_description is written in its place
         * dcterms:modified is refreshed to 'now'
         * the previous version is kept as a hasPreviousPolicy
-          annotation so we don't lose history — this is useful
+          annotation so we does not lose history  -  this is useful
           for the demo because you can show the professor that
           previous versions are still visible.
 
-This file is pure Python helpers — no Flask — so you can run the
+This file is pure Python helpers  -  no Flask  -  so you can run the
 demo script at the bottom to see the before/after triples.
 
 Run as a standalone demo:
@@ -36,6 +36,13 @@ DCTERMS_MODIFIED = URIRef("http://purl.org/dc/terms/modified")
 # Custom predicate to keep a copy of the previous policy text so the
 # demo can show "here's what it was before, here's what it is now".
 PREV_POLICY_PRED = URIRef("http://example.org/onto.owl#hasPreviousPolicy")
+
+# Custom predicate marking the last time the *agentic maintenance loop*
+# looked at this manufacturer, regardless of whether a write happened.
+# This is distinct from dcterms:modified (which only moves when the
+# policy text itself changes)  -  checked_at moves every time the agent
+# runs a check, including "checked and confirmed current" outcomes.
+CHECKED_AT_PRED = URIRef("http://example.org/onto.owl#checkedAt")
 
 
 def _now_iso() -> str:
@@ -103,6 +110,37 @@ def upsert_policy(g: Graph, manufacturer_iri: URIRef, policy_prop: URIRef,
     }
 
 
+def mark_checked(g: Graph, manufacturer_iri: URIRef,
+                  checked_at_pred: URIRef = CHECKED_AT_PRED) -> str:
+    """
+    Stamp `manufacturer_iri` with a fresh checkedAt timestamp, whether or
+    not this check resulted in a policy write.
+
+    This is what lets the KG (and the audit trail) distinguish:
+      - "we have never looked at this manufacturer since it was added"
+      - "we checked recently and confirmed the policy is current"
+      - "we checked recently and updated the policy"
+
+    dcterms:modified (see upsert_policy above) only moves on the third
+    case. checked_at moves every time mark_checked() is called, which the
+    agentic maintenance loop does at the end of every run regardless of
+    outcome.
+
+    Only one checkedAt literal is kept  -  the previous one is removed
+    before the new one is added, same pattern as dcterms:modified.
+
+    Returns the ISO-8601 timestamp string that was written.
+    """
+    now_str = _now_iso()
+    now = Literal(now_str, datatype=XSD.dateTime)
+
+    for old in list(g.objects(manufacturer_iri, checked_at_pred)):
+        g.remove((manufacturer_iri, checked_at_pred, old))
+    g.add((manufacturer_iri, checked_at_pred, now))
+
+    return now_str
+
+
 def get_policy_history(g: Graph, manufacturer_iri: URIRef, policy_prop: URIRef) -> dict:
     """
     Return everything the UI needs to display the history panel:
@@ -114,12 +152,14 @@ def get_policy_history(g: Graph, manufacturer_iri: URIRef, policy_prop: URIRef) 
     current = list(g.objects(manufacturer_iri, policy_prop))
     created = list(g.objects(manufacturer_iri, DCTERMS_CREATED))
     modified = list(g.objects(manufacturer_iri, DCTERMS_MODIFIED))
+    checked = list(g.objects(manufacturer_iri, CHECKED_AT_PRED))
     previous = [str(o) for o in g.objects(manufacturer_iri, PREV_POLICY_PRED)]
 
     return {
         "current_policy": str(current[0]) if current else None,
         "created_at": str(created[0]) if created else None,
         "modified_at": str(modified[0]) if modified else None,
+        "checked_at": str(checked[0]) if checked else None,
         "previous_policies": previous,
     }
 
