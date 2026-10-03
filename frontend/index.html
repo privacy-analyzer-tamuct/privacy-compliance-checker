@@ -1340,7 +1340,8 @@
         darkModeToggle.textContent = 'Light';
       }
 
-      darkModeToggle.onclick = function() {
+      if (darkModeToggle) {
+  darkModeToggle.onclick = function() {
         body.classList.toggle('dark-mode');
         
         if (body.classList.contains('dark-mode')) {
@@ -1351,6 +1352,7 @@
           localStorage.setItem('darkMode', 'disabled');
         }
       };
+      }
 
       async function sendChat() {
   const input = el('chatInput');
