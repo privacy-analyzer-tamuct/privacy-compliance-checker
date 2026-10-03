@@ -916,16 +916,16 @@ def classify_existing():
         )
         crawler_report = {"error": str(e), "wrote_update": False}
 
-    # ── Step 3: score the (possibly refreshed) policy ────────────────────
-    scores = compute_scores(mfg["policy"], state)
-    # A manual Classify/check is an explicit refresh point for the four
-    # policy-specific statutes/classes-found datatype values.
-    assessment_score = update_assessment_score(
-        mfg["iri"], mfg["policy"], update_statute_counts=True
-    )
-    g.serialize(destination=str(ONTO_PATH), format="xml")
-
-    return jsonify({
+            # ── Step 3: score the (possibly refreshed) policy ────────────────────
+        scores = compute_scores(mfg["policy"], state)
+        
+        # A manual Classify/check is an explicit refresh point for the four
+        # policy-specific statutes/classes-found datatype values.
+        assessment_score = update_assessment_score(
+            mfg["iri"], mfg["policy"], update_statute_counts=True
+        )
+        
+        return jsonify({
         "iri":           mfg["iri"],
         "name":          mfg["name"],
         "policy":        mfg["policy"],
