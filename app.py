@@ -810,7 +810,6 @@ def detail():
 
     scores = compute_scores(mfg["policy"], state)
     assessment_score = update_assessment_score(mfg["iri"], mfg["policy"])
-    g.serialize(destination=str(ONTO_PATH), format="xml")
     return jsonify({
         "iri":          mfg["iri"],
         "name":         mfg["name"],
