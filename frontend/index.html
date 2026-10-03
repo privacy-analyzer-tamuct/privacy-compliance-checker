@@ -1332,25 +1332,27 @@
       loadDropdown();
 
       // Dark mode toggle
-      const darkModeToggle = el('darkModeToggle');
-      const body = document.body;
+const darkModeToggle = el('darkModeToggle');
+const body = document.body;
 
-      if (localStorage.getItem('darkMode') === 'enabled') {
-        body.classList.add('dark-mode');
-        darkModeToggle.textContent = 'Light';
-      }
+if (darkModeToggle) {
+  if (localStorage.getItem('darkMode') === 'enabled') {
+    body.classList.add('dark-mode');
+    darkModeToggle.textContent = 'Light';
+  }
 
   darkModeToggle.onclick = function() {
-        body.classList.toggle('dark-mode');
-        
-        if (body.classList.contains('dark-mode')) {
-          darkModeToggle.textContent = 'Light';
-          localStorage.setItem('darkMode', 'enabled');
-        } else {
-          darkModeToggle.textContent = 'Dark';
-          localStorage.setItem('darkMode', 'disabled');
-        }
-      };
+    body.classList.toggle('dark-mode');
+
+    if (body.classList.contains('dark-mode')) {
+      darkModeToggle.textContent = 'Light';
+      localStorage.setItem('darkMode', 'enabled');
+    } else {
+      darkModeToggle.textContent = 'Dark';
+      localStorage.setItem('darkMode', 'disabled');
+    }
+  };
+}
 
       async function sendChat() {
   const input = el('chatInput');
