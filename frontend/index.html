@@ -1386,7 +1386,7 @@
   statusEl.textContent = "Thinking...";
 
   try {
-    const res = await fetch("/chat", {
+    const res = await fetch(`${API_BASE}/chat`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ question, iri, state: el('stateFilter').value })
