@@ -673,6 +673,7 @@
   </div><!-- /container -->
 
     <script>
+    const API_BASE = "https://privacypolicyanalyzertamuct.pythonanywhere.com";
     let historychart = null; 
 
       // ── Tab switching ──
@@ -803,7 +804,7 @@
 }
 
       async function loadDropdown() {
-        const res = await fetch('/list');
+        const res = await fetch(`${API_BASE}/list`);
         const items = await res.json();
         console.log('Manufacturers loaded:', items);
         const sel = el('manufacturerSelect');
@@ -842,7 +843,7 @@
 
         const stateFilter = el('stateFilter').value;
 
-        const res = await fetch('/detail?iri=' + encodeURIComponent(iri) + '&state=' + encodeURIComponent(stateFilter));
+        const res = await fetch(`${API_BASE}/detail?iri=` + encodeURIComponent(iri) + '&state=' + encodeURIComponent(stateFilter));
         const data = await res.json();
 
         el('details').classList.remove('hidden');
@@ -1144,14 +1145,14 @@
 
     if (fallbackPolicy) {
       // Manual fallback if user opened the fallback box and pasted policy text.
-      res = await fetch("/add_manufacturer", {
+      res = await fetch(`${API_BASE}/add_manufacturer`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ name, policy: fallbackPolicy })
       });
     } else {
       // Main name-only agentic flow.
-      res = await fetch("/auto_add_manufacturer", {
+      res = await fetch(`${API_BASE}/auto_add_manufacturer`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ name })
@@ -1206,7 +1207,7 @@
 
         try {
           statusEl.textContent = "Extracting text...";
-          const res = await fetch("/extract_pdf", {
+          const res = await fetch(`${API_BASE}/extract_pdf`, {
             method: "POST",
             body: formData
           });
