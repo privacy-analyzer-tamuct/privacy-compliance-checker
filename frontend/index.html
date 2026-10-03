@@ -1238,22 +1238,26 @@
         }
       }
 
-      el('togglePolicy').onclick = function () {
-        const policyEl = el('policy');
-        const toggleBtn = el('togglePolicy');
+      const togglePolicy = el('togglePolicy');
 
-        if (!policyExpanded) {
-          policyEl.textContent = policyFullText;
-          policyEl.style.overflow = 'auto';
-          toggleBtn.textContent = "Show less";
-          policyExpanded = true;
-        } else {
-          policyEl.textContent = policyTruncatedText;
-          policyEl.style.overflow = 'hidden';
-          toggleBtn.textContent = "Read more";
-          policyExpanded = false;
-        }
-      };
+if (togglePolicy) {
+  togglePolicy.onclick = function () {
+    const policyEl = el('policy');
+    const toggleBtn = el('togglePolicy');
+
+    if (!policyExpanded) {
+      policyEl.textContent = policyFullText;
+      policyEl.style.overflow = 'auto';
+      toggleBtn.textContent = "Show less";
+      policyExpanded = true;
+    } else {
+      policyEl.textContent = policyTruncatedText;
+      policyEl.style.overflow = 'hidden';
+      toggleBtn.textContent = "Read more";
+      policyExpanded = false;
+    }
+  };
+}
 
       function toggleLauncherPanel(showId, hideId) {
         const show = document.getElementById(showId);
