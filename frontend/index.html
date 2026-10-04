@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Privacy Policy Compliance Analyzer</title>
-    <link rel="stylesheet" href="/static/style.css">
+    <link rel="stylesheet" href="style.css">
     <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
     <style>
       /* ── Ribbon nav ── */
@@ -311,7 +311,7 @@
       }
       @media (max-width: 600px) {
         .about-grid { grid-template-columns: 1fr; }
-        .ribbon-logo { display: flex; }
+        .ribbon-logo { display: none; }
       }
 
       /* ── Fix background gradient tiling/seam ──
@@ -325,9 +325,6 @@
         background-size: cover !important;
       }
     </style>
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800;900&display=swap">
-    <link rel="stylesheet" href="/static/gitingest-theme.css">
   </head>
   <body>
 
@@ -338,7 +335,6 @@
       <button class="ribbon-tab active" id="tab-btn-home" onclick="showTab('home', this)">Home</button>
       <button class="ribbon-tab" id="tab-btn-laws" onclick="showTab('laws', this)">About the Laws</button>
       <button class="ribbon-tab" id="tab-btn-about" onclick="showTab('about', this)">About the App</button>
-      <button id="darkModeToggle" type="button">Dark</button>
 
     </div>
   </nav>
@@ -348,39 +344,44 @@
     <!-- ═══════════════════════════ HOME TAB ═══════════════════════════ -->
     <div id="tab-home" class="page-section active">
 
-      <!-- ═══ HERO (gitingest-style) ═══ -->
-      <section class="hero">
-        <svg class="sparkle red" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 0c.8 6.2 5.8 11.2 12 12-6.2.8-11.2 5.8-12 12-.8-6.2-5.8-11.2-12-12C6.2 11.2 11.2 6.2 12 0z" fill="#FE4A60" stroke="#000" stroke-width="1.2"/></svg>
-        <svg class="sparkle green" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 0c.8 6.2 5.8 11.2 12 12-6.2.8-11.2 5.8-12 12-.8-6.2-5.8-11.2-12-12C6.2 11.2 11.2 6.2 12 0z" fill="#A7E8C7" stroke="#000" stroke-width="1.2"/></svg>
-        <h1 class="hero-title">Privacy policy <span class="hl">compliance</span> analyzer</h1>
-        <p class="hero-sub">Turn any manufacturer's privacy policy into a clear compliance report.</p>
-        <p class="hero-sub2">Checks coverage against California SB-327, Oregon HB 2395, PL 116-207 and NISTIR 8259.</p>
-      </section>
+      <h1 style="text-align: center; color: white; font-size: 46px; font-family: 'Arial Black', sans-serif;">Privacy Policy Compliance Analyzer</h1>
 
 <!-- ---------------------------------------------------------------- MANUFACTURER SELECT --------------------------------------------------------- -->
 
       <!-- Two launcher cards -->
-      <div class="launchers">
+      <div style="display:flex; gap:20px; margin-bottom: 28px; flex-wrap:wrap;">
 
         <!-- Box 1: Manufacturer -->
-        <div class="launcher-card" onclick="toggleLauncherPanel('mfgPanel', 'regPanel')">
-          <div class="launcher-icon">
-            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#000" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="7" width="20" height="14" rx="2"/><path d="M16 7V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v2"/><line x1="12" y1="12" x2="12" y2="16"/><line x1="10" y1="14" x2="14" y2="14"/></svg>
+        <div onclick="toggleLauncherPanel('mfgPanel', 'regPanel')"
+             style="flex:1; min-width:220px; background:#fff; border:1px solid #ddd;
+                    border-radius:14px; padding:22px 26px; cursor:pointer; transition:background 0.2s, box-shadow 0.2s;
+                    display:flex; align-items:center; gap:16px; box-shadow:0 2px 8px rgba(0,0,0,0.08);
+                    border-bottom: 10px #1a1a2e; border-right: 10px #1a1a2e;"
+             onmouseover="this.style.boxShadow='0 4px 18px rgba(0,0,0,0.15)'"
+             onmouseout="this.style.boxShadow='0 2px 8px rgba(0,0,0,0.08)'">
+          <div style="width:44px;height:44px;background:#1a1a2e;border-radius:10px;display:flex;align-items:center;justify-content:center;flex-shrink:0;">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="7" width="20" height="14" rx="2"/><path d="M16 7V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v2"/><line x1="12" y1="12" x2="12" y2="16"/><line x1="10" y1="14" x2="14" y2="14"/></svg>
           </div>
           <div>
-            <div class="launcher-title">Manufacturer</div>
-            <div class="launcher-desc">Select or add a manufacturer to analyze</div>
+            <div style="color:#1a1a2e; font-size:16px; font-weight:700; margin-bottom:3px;">Manufacturer</div>
+            <div style="color:#666; font-size:13px;">Select or add a manufacturer to analyze</div>
           </div>
         </div>
 
         <!-- Box 2: Regulation Config -->
-        <div class="launcher-card" onclick="toggleLauncherPanel('regPanel', 'mfgPanel')">
-          <div class="launcher-icon">
-            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#000" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.07 4.93A10 10 0 1 0 4.93 19.07M12 2v2M12 20v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M2 12h2M20 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/></svg>
+        <div onclick="toggleLauncherPanel('regPanel', 'mfgPanel')"
+             style="flex:1; min-width:220px; background:#fff; border:1px solid #ddd;
+                    border-radius:14px; padding:22px 26px; cursor:pointer; transition:background 0.2s, box-shadow 0.2s;
+                    display:flex; align-items:center; gap:16px; box-shadow:0 2px 8px rgba(0,0,0,0.08);
+                    border-bottom: 10px #1a1a2e; border-right: 10px #1a1a2e;""
+             onmouseover="this.style.boxShadow='0 4px 18px rgba(0,0,0,0.15)'"
+             onmouseout="this.style.boxShadow='0 2px 8px rgba(0,0,0,0.08)'">
+          <div style="width:44px;height:44px;background:#1a1a2e;border-radius:10px;display:flex;align-items:center;justify-content:center;flex-shrink:0;">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.07 4.93A10 10 0 1 0 4.93 19.07M12 2v2M12 20v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M2 12h2M20 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/></svg>
           </div>
           <div>
-            <div class="launcher-title">Regulation Config</div>
-            <div class="launcher-desc">Add regulations or run incremental updates</div>
+            <div style="color:#1a1a2e; font-size:16px; font-weight:700; margin-bottom:3px;">Regulation Config</div>
+            <div style="color:#666; font-size:13px;">Add regulations or run incremental updates</div>
           </div>
         </div>
       </div>
@@ -672,6 +673,7 @@
   </div><!-- /container -->
 
     <script>
+    const API_BASE = "https://privacypolicyanalyzertamuct.pythonanywhere.com";
     let historychart = null; 
 
       // ── Tab switching ──
@@ -802,7 +804,7 @@
 }
 
       async function loadDropdown() {
-        const res = await fetch('/list');
+        const res = await fetch(`${API_BASE}/list`);
         const items = await res.json();
         console.log('Manufacturers loaded:', items);
         const sel = el('manufacturerSelect');
@@ -841,7 +843,7 @@
 
         const stateFilter = el('stateFilter').value;
 
-        const res = await fetch('/detail?iri=' + encodeURIComponent(iri) + '&state=' + encodeURIComponent(stateFilter));
+        const res = await fetch(`${API_BASE}/detail?iri=` + encodeURIComponent(iri) + '&state=' + encodeURIComponent(stateFilter));
         const data = await res.json();
 
         el('details').classList.remove('hidden');
@@ -1143,14 +1145,14 @@
 
     if (fallbackPolicy) {
       // Manual fallback if user opened the fallback box and pasted policy text.
-      res = await fetch("/add_manufacturer", {
+      res = await fetch(`${API_BASE}/add_manufacturer`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ name, policy: fallbackPolicy })
       });
     } else {
       // Main name-only agentic flow.
-      res = await fetch("/auto_add_manufacturer", {
+      res = await fetch(`${API_BASE}/auto_add_manufacturer`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ name })
@@ -1205,7 +1207,7 @@
 
         try {
           statusEl.textContent = "Extracting text...";
-          const res = await fetch("/extract_pdf", {
+          const res = await fetch(`${API_BASE}/extract_pdf`, {
             method: "POST",
             body: formData
           });
@@ -1236,22 +1238,26 @@
         }
       }
 
-      el('togglePolicy').onclick = function () {
-        const policyEl = el('policy');
-        const toggleBtn = el('togglePolicy');
+      const togglePolicy = el('togglePolicy');
 
-        if (!policyExpanded) {
-          policyEl.textContent = policyFullText;
-          policyEl.style.overflow = 'auto';
-          toggleBtn.textContent = "Show less";
-          policyExpanded = true;
-        } else {
-          policyEl.textContent = policyTruncatedText;
-          policyEl.style.overflow = 'hidden';
-          toggleBtn.textContent = "Read more";
-          policyExpanded = false;
-        }
-      };
+if (togglePolicy) {
+  togglePolicy.onclick = function () {
+    const policyEl = el('policy');
+    const toggleBtn = el('togglePolicy');
+
+    if (!policyExpanded) {
+      policyEl.textContent = policyFullText;
+      policyEl.style.overflow = 'auto';
+      toggleBtn.textContent = "Show less";
+      policyExpanded = true;
+    } else {
+      policyEl.textContent = policyTruncatedText;
+      policyEl.style.overflow = 'hidden';
+      toggleBtn.textContent = "Read more";
+      policyExpanded = false;
+    }
+  };
+}
 
       function toggleLauncherPanel(showId, hideId) {
         const show = document.getElementById(showId);
@@ -1330,25 +1336,27 @@
       loadDropdown();
 
       // Dark mode toggle
-      const darkModeToggle = el('darkModeToggle');
-      const body = document.body;
+const darkModeToggle = el('darkModeToggle');
+const body = document.body;
 
-      if (localStorage.getItem('darkMode') === 'enabled') {
-        body.classList.add('dark-mode');
-        darkModeToggle.textContent = 'Light';
-      }
+if (darkModeToggle) {
+  if (localStorage.getItem('darkMode') === 'enabled') {
+    body.classList.add('dark-mode');
+    darkModeToggle.textContent = 'Light';
+  }
 
-      darkModeToggle.onclick = function() {
-        body.classList.toggle('dark-mode');
-        
-        if (body.classList.contains('dark-mode')) {
-          darkModeToggle.textContent = 'Light';
-          localStorage.setItem('darkMode', 'enabled');
-        } else {
-          darkModeToggle.textContent = 'Dark';
-          localStorage.setItem('darkMode', 'disabled');
-        }
-      };
+  darkModeToggle.onclick = function() {
+    body.classList.toggle('dark-mode');
+
+    if (body.classList.contains('dark-mode')) {
+      darkModeToggle.textContent = 'Light';
+      localStorage.setItem('darkMode', 'enabled');
+    } else {
+      darkModeToggle.textContent = 'Dark';
+      localStorage.setItem('darkMode', 'disabled');
+    }
+  };
+}
 
       async function sendChat() {
   const input = el('chatInput');
@@ -1384,7 +1392,7 @@
   statusEl.textContent = "Thinking...";
 
   try {
-    const res = await fetch("/chat", {
+    const res = await fetch(`${API_BASE}/chat`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ question, iri, state: el('stateFilter').value })
