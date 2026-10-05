@@ -18,4 +18,4 @@ python app.py
 ```
 Open http://127.0.0.1:5000 in browser to view site locally
 
-Live Website Link: https://privacy-compliance-analyzer.onrender.com
+Live Website Link: https://privacypolicyanalyzertamuct.pythonanywhere.com/
