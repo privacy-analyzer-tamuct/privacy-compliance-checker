@@ -554,30 +554,6 @@
     
 
 
-    <!-- http://example.org/onto.owl#Accountability_Act -->
-
-    <owl:Class rdf:about="http://example.org/onto.owl#Accountability_Act"/>
-    
-
-
-    <!-- http://example.org/onto.owl#Bill_Text -->
-
-    <owl:Class rdf:about="http://example.org/onto.owl#Bill_Text"/>
-    
-
-
-    <!-- http://example.org/onto.owl#Business_Organizations_Code -->
-
-    <owl:Class rdf:about="http://example.org/onto.owl#Business_Organizations_Code"/>
-    
-
-
-    <!-- http://example.org/onto.owl#Commerce_Code -->
-
-    <owl:Class rdf:about="http://example.org/onto.owl#Commerce_Code"/>
-    
-
-
     <!-- http://example.org/onto.owl#ComplianceCheck -->
 
     <owl:Class rdf:about="http://example.org/onto.owl#ComplianceCheck">
@@ -611,35 +587,11 @@
     
 
 
-    <!-- http://example.org/onto.owl#Education_Code -->
-
-    <owl:Class rdf:about="http://example.org/onto.owl#Education_Code"/>
-    
-
-
-    <!-- http://example.org/onto.owl#Health_Insurance_Portability -->
-
-    <owl:Class rdf:about="http://example.org/onto.owl#Health_Insurance_Portability"/>
-    
-
-
     <!-- http://example.org/onto.owl#Individuals -->
 
     <owl:Class rdf:about="http://example.org/onto.owl#Individuals">
         <rdfs:subClassOf rdf:resource="http://yourdomain.org/ontology/laws#Customer"/>
     </owl:Class>
-    
-
-
-    <!-- http://example.org/onto.owl#Information_Resources -->
-
-    <owl:Class rdf:about="http://example.org/onto.owl#Information_Resources"/>
-    
-
-
-    <!-- http://example.org/onto.owl#Internal_Revenue_Code -->
-
-    <owl:Class rdf:about="http://example.org/onto.owl#Internal_Revenue_Code"/>
     
 
 
@@ -832,12 +784,6 @@
     <owl:Class rdf:about="http://yourdomain.org/ontology/laws#Code_Section">
         <rdfs:subClassOf rdf:resource="http://yourdomain.org/ontology/laws#Legal_Concept"/>
     </owl:Class>
-    
-
-
-    <!-- http://yourdomain.org/ontology/laws#Consumer -->
-
-    <owl:Class rdf:about="http://yourdomain.org/ontology/laws#Consumer"/>
     
 
 
@@ -27117,7 +27063,6 @@ undecipherable.</rdfs:comment>
     <!-- http://yourdomain.org/ontology/laws#consumer_ind -->
 
     <owl:NamedIndividual rdf:about="http://yourdomain.org/ontology/laws#consumer_ind">
-        <rdf:type rdf:resource="http://yourdomain.org/ontology/laws#Consumer"/>
         <laws:isReferencedInDocument rdf:resource="http://yourdomain.org/ontology/laws#Oregon_HB2395"/>
         <laws:documentOrigin>Oregon_HB2395</laws:documentOrigin>
         <laws:sourceText>(12) Publishes on a website related to the
@@ -27657,135 +27602,6 @@ representation.</laws:sourceText>
         <AssessmentScoreOregon rdf:datatype="http://www.w3.org/2001/XMLSchema#decimal">0.00</AssessmentScoreOregon>
         <AssessmentScorePublicLaw116207 rdf:datatype="http://www.w3.org/2001/XMLSchema#decimal">0.00</AssessmentScorePublicLaw116207>
     </rdf:Description>
-    <rdf:Description rdf:about="http://example.org/onto.owl#Accountability_Act">
-        <rdfs:comment>The term does not include a
- physical or digital photograph or data generated from a physical or
- digital photograph, a video or audio recording or data generated
- from a video or audio recording, or information collected, used, or
- stored for health care treatment, payment, or operations under the
- Health Insurance Portability and Accountability Act of 1996 (42
- U.S.C.</rdfs:comment>
-        <rdfs:hasLaw>Texas HB 4. The term does not include a
- physical or digital photograph or data generated from a physical or
- digital photograph, a video or audio recording or data generated
- from a video or audio recording, or information collected, used, or
- stored for health care treatment, payment, or operations under the
- Health Insurance Portability and Accountability Act of 1996 (42
- U.S.C. (4)  &quot;Business associate&quot; has the meaning assigned to
- the term by the Health Insurance Portability and Accountability Act
- of 1996 (42 U.S.C.</rdfs:hasLaw>
-        <rdfs:label>Accountability Act</rdfs:label>
-    </rdf:Description>
-    <rdf:Description rdf:about="http://example.org/onto.owl#Bill_Text">
-        <rdfs:comment>The term does not
- include:
-                    (A)  acceptance of a general or broad terms of use
- or similar document that contains descriptions of personal data
- processing along with other, unrelated information;
-                    (B)  hovering over, muting, pausing, or closing a
- given piece of content; or4/22/26, 10:02 AM 88(R) HB 4 - Enrolled version - Bill Text
-https://capitol.texas.gov/tlodocs/88R/billtext/html/HB00004F.htm 1/16
-
-                    (C)  agreement obtained through the use of dark
- patterns.</rdfs:comment>
-        <rdfs:hasLaw>Texas HB 4. The term does not
- include:
-                    (A)  acceptance of a general or broad terms of use
- or similar document that contains descriptions of personal data
- processing along with other, unrelated information;
-                    (B)  hovering over, muting, pausing, or closing a
- given piece of content; or4/22/26, 10:02 AM 88(R) HB 4 - Enrolled version - Bill Text
-https://capitol.texas.gov/tlodocs/88R/billtext/html/HB00004F.htm 1/16
-
-                    (C)  agreement obtained through the use of dark
- patterns. (18)  &quot;Nonprofit organization&quot; means:
-                    (A)  a corporation organized under Chapters 20 and
- 22, Business Organizations Code, and the provisions of Title 1,
- Business Organizations Code, to the extent applicable to nonprofit
- corporations;
-                    (B)  an organization exempt from federal taxation
- under Section 501(a), Internal Revenue Code of 1986, by being
- listed as an exempt organization under Section 501(c)(3),
- 501(c)(6), 501(c)(12), or 501(c)(19) of that code;
-                    (C)  a political organization; or4/22/26, 10:02 AM 88(R) HB 4 - Enrolled version - Bill Text
-https://capitol.texas.gov/tlodocs/88R/billtext/html/HB00004F.htm 2/16
-
-                    (D)  an organization that:
-                          (i)  is exempt from federal taxation under
- Section 501(a), Internal Revenue Code of 1986, by being listed as an
- exempt organization under Section 501(c)(4) of that code; and
-                          (ii)  is described by Section 701.052(a),
- Insurance Code.</rdfs:hasLaw>
-        <rdfs:label>Bill Text</rdfs:label>
-    </rdf:Description>
-    <rdf:Description rdf:about="http://example.org/onto.owl#Business_Organizations_Code">
-        <rdfs:comment>(18)  &quot;Nonprofit organization&quot; means:
-                    (A)  a corporation organized under Chapters 20 and
- 22, Business Organizations Code, and the provisions of Title 1,
- Business Organizations Code, to the extent applicable to nonprofit
- corporations;
-                    (B)  an organization exempt from federal taxation
- under Section 501(a), Internal Revenue Code of 1986, by being
- listed as an exempt organization under Section 501(c)(3),
- 501(c)(6), 501(c)(12), or 501(c)(19) of that code;
-                    (C)  a political organization; or4/22/26, 10:02 AM 88(R) HB 4 - Enrolled version - Bill Text
-https://capitol.texas.gov/tlodocs/88R/billtext/html/HB00004F.htm 2/16
-
-                    (D)  an organization that:
-                          (i)  is exempt from federal taxation under
- Section 501(a), Internal Revenue Code of 1986, by being listed as an
- exempt organization under Section 501(c)(4) of that code; and
-                          (ii)  is described by Section 701.052(a),
- Insurance Code.</rdfs:comment>
-        <rdfs:hasLaw>Texas HB 4. (18)  &quot;Nonprofit organization&quot; means:
-                    (A)  a corporation organized under Chapters 20 and
- 22, Business Organizations Code, and the provisions of Title 1,
- Business Organizations Code, to the extent applicable to nonprofit
- corporations;
-                    (B)  an organization exempt from federal taxation
- under Section 501(a), Internal Revenue Code of 1986, by being
- listed as an exempt organization under Section 501(c)(3),
- 501(c)(6), 501(c)(12), or 501(c)(19) of that code;
-                    (C)  a political organization; or4/22/26, 10:02 AM 88(R) HB 4 - Enrolled version - Bill Text
-https://capitol.texas.gov/tlodocs/88R/billtext/html/HB00004F.htm 2/16
-
-                    (D)  an organization that:
-                          (i)  is exempt from federal taxation under
- Section 501(a), Internal Revenue Code of 1986, by being listed as an
- exempt organization under Section 501(c)(4) of that code; and
-                          (ii)  is described by Section 701.052(a),
- Insurance Code. (18)  &quot;Nonprofit organization&quot; means:
-                    (A)  a corporation organized under Chapters 20 and
- 22, Business Organizations Code, and the provisions of Title 1,
- Business Organizations Code, to the extent applicable to nonprofit
- corporations;
-                    (B)  an organization exempt from federal taxation
- under Section 501(a), Internal Revenue Code of 1986, by being
- listed as an exempt organization under Section 501(c)(3),
- 501(c)(6), 501(c)(12), or 501(c)(19) of that code;
-                    (C)  a political organization; or4/22/26, 10:02 AM 88(R) HB 4 - Enrolled version - Bill Text
-https://capitol.texas.gov/tlodocs/88R/billtext/html/HB00004F.htm 2/16
-
-                    (D)  an organization that:
-                          (i)  is exempt from federal taxation under
- Section 501(a), Internal Revenue Code of 1986, by being listed as an
- exempt organization under Section 501(c)(4) of that code; and
-                          (ii)  is described by Section 701.052(a),
- Insurance Code.</rdfs:hasLaw>
-        <rdfs:label>Business Organizations Code</rdfs:label>
-    </rdf:Description>
-    <rdf:Description rdf:about="http://example.org/onto.owl#Commerce_Code">
-        <rdfs:comment>Title 11, Business &amp; Commerce Code, is amended by
- adding Subtitle C to read as follows:
- SUBTITLE C.</rdfs:comment>
-        <rdfs:hasLaw>Texas HB 4. Title 11, Business &amp; Commerce Code, is amended by
- adding Subtitle C to read as follows:
- SUBTITLE C. (a) The Department of Information Resources,
- under the management of the chief privacy officer, shall review the
- implementation of the requirements of Chapter 541, Business &amp;
- Commerce Code, as added by this Act.</rdfs:hasLaw>
-        <rdfs:label>Commerce Code</rdfs:label>
-    </rdf:Description>
     <rdf:Description rdf:about="http://example.org/onto.owl#ComplianceCheck">
         <rdfs:comment>Oregon HB 2395 — “A manufacturer shall equip a connected device with reasonable security features” and “A manufacturer that violates subsection (2) of this section engages in an unlawful trade practice under ORS 646.607,” tying compliance with security-feature requirements to enforcement.</rdfs:comment>
         <rdfs:hasLaw>Laws: Oregon HB 2395, IoT Cybersecurity Improvement Act of 2020 (PL 116-207), NIST IR 8259</rdfs:hasLaw>
@@ -27813,128 +27629,6 @@ IoT Cybersecurity Improvement Act of 2020 (Public Law 116-207) — “The Direct
         <AssessmentScoreNISTIR8259 rdf:datatype="http://www.w3.org/2001/XMLSchema#decimal">0.00</AssessmentScoreNISTIR8259>
         <AssessmentScoreOregon rdf:datatype="http://www.w3.org/2001/XMLSchema#decimal">0.00</AssessmentScoreOregon>
         <AssessmentScorePublicLaw116207 rdf:datatype="http://www.w3.org/2001/XMLSchema#decimal">0.00</AssessmentScorePublicLaw116207>
-    </rdf:Description>
-    <rdf:Description rdf:about="http://example.org/onto.owl#Education_Code">
-        <rdfs:comment>(16)  &quot;Institution of higher education&quot; means:
-                    (A)  an institution of higher education as defined
- by Section 61.003, Education Code; or
-                    (B)  a private or independent institution of
- higher education as defined by Section 61.003, Education Code.</rdfs:comment>
-        <rdfs:hasLaw>Texas HB 4. (16)  &quot;Institution of higher education&quot; means:
-                    (A)  an institution of higher education as defined
- by Section 61.003, Education Code; or
-                    (B)  a private or independent institution of
- higher education as defined by Section 61.003, Education Code. (16)  &quot;Institution of higher education&quot; means:
-                    (A)  an institution of higher education as defined
- by Section 61.003, Education Code; or
-                    (B)  a private or independent institution of
- higher education as defined by Section 61.003, Education Code.</rdfs:hasLaw>
-        <rdfs:label>Education Code</rdfs:label>
-    </rdf:Description>
-    <rdf:Description rdf:about="http://example.org/onto.owl#Health_Insurance_Portability">
-        <rdfs:comment>The
- following information is exempt from this chapter:
-              (1)  protected health information under the Health
- Insurance Portability and Accountability Act of 1996 (42 U.S.C.</rdfs:comment>
-        <rdfs:comment>The term does not include a
- physical or digital photograph or data generated from a physical or
- digital photograph, a video or audio recording or data generated
- from a video or audio recording, or information collected, used, or
- stored for health care treatment, payment, or operations under the
- Health Insurance Portability and Accountability Act of 1996 (42
- U.S.C.</rdfs:comment>
-        <rdfs:hasLaw>Texas HB 4. The
- following information is exempt from this chapter:
-              (1)  protected health information under the Health
- Insurance Portability and Accountability Act of 1996 (42 U.S.C. Section 1320d et seq.);
-              (8)  information originating from, and intermingled to
- be indistinguishable with, or information treated in the same
- manner as, information exempt under this section that is maintained
- by a covered entity or business associate as defined by the Health
- Insurance Portability and Accountability Act of 1996 (42 U.S.C.</rdfs:hasLaw>
-        <rdfs:hasLaw>Texas HB 4. The term does not include a
- physical or digital photograph or data generated from a physical or
- digital photograph, a video or audio recording or data generated
- from a video or audio recording, or information collected, used, or
- stored for health care treatment, payment, or operations under the
- Health Insurance Portability and Accountability Act of 1996 (42
- U.S.C. (4)  &quot;Business associate&quot; has the meaning assigned to
- the term by the Health Insurance Portability and Accountability Act
- of 1996 (42 U.S.C.</rdfs:hasLaw>
-        <rdfs:label>Health
- Insurance Portability</rdfs:label>
-        <rdfs:label>Health Insurance Portability</rdfs:label>
-    </rdf:Description>
-    <rdf:Description rdf:about="http://example.org/onto.owl#Information_Resources">
-        <rdfs:comment>(a) The Department of Information Resources,
- under the management of the chief privacy officer, shall review the
- implementation of the requirements of Chapter 541, Business &amp;
- Commerce Code, as added by this Act.</rdfs:comment>
-        <rdfs:hasLaw>Texas HB 4. (a) The Department of Information Resources,
- under the management of the chief privacy officer, shall review the
- implementation of the requirements of Chapter 541, Business &amp;
- Commerce Code, as added by this Act. (b)  Not later than September 1, 2024, the Department of
- Information Resources shall create an online portal available on
- the department&apos;s Internet website for members of the public to
- provide feedback and recommend changes to Chapter 541, Business &amp;
- Commerce Code, as added by this Act.</rdfs:hasLaw>
-        <rdfs:label>Information Resources</rdfs:label>
-    </rdf:Description>
-    <rdf:Description rdf:about="http://example.org/onto.owl#Internal_Revenue_Code">
-        <rdfs:comment>(18)  &quot;Nonprofit organization&quot; means:
-                    (A)  a corporation organized under Chapters 20 and
- 22, Business Organizations Code, and the provisions of Title 1,
- Business Organizations Code, to the extent applicable to nonprofit
- corporations;
-                    (B)  an organization exempt from federal taxation
- under Section 501(a), Internal Revenue Code of 1986, by being
- listed as an exempt organization under Section 501(c)(3),
- 501(c)(6), 501(c)(12), or 501(c)(19) of that code;
-                    (C)  a political organization; or4/22/26, 10:02 AM 88(R) HB 4 - Enrolled version - Bill Text
-https://capitol.texas.gov/tlodocs/88R/billtext/html/HB00004F.htm 2/16
-
-                    (D)  an organization that:
-                          (i)  is exempt from federal taxation under
- Section 501(a), Internal Revenue Code of 1986, by being listed as an
- exempt organization under Section 501(c)(4) of that code; and
-                          (ii)  is described by Section 701.052(a),
- Insurance Code.</rdfs:comment>
-        <rdfs:hasLaw>Texas HB 4. (18)  &quot;Nonprofit organization&quot; means:
-                    (A)  a corporation organized under Chapters 20 and
- 22, Business Organizations Code, and the provisions of Title 1,
- Business Organizations Code, to the extent applicable to nonprofit
- corporations;
-                    (B)  an organization exempt from federal taxation
- under Section 501(a), Internal Revenue Code of 1986, by being
- listed as an exempt organization under Section 501(c)(3),
- 501(c)(6), 501(c)(12), or 501(c)(19) of that code;
-                    (C)  a political organization; or4/22/26, 10:02 AM 88(R) HB 4 - Enrolled version - Bill Text
-https://capitol.texas.gov/tlodocs/88R/billtext/html/HB00004F.htm 2/16
-
-                    (D)  an organization that:
-                          (i)  is exempt from federal taxation under
- Section 501(a), Internal Revenue Code of 1986, by being listed as an
- exempt organization under Section 501(c)(4) of that code; and
-                          (ii)  is described by Section 701.052(a),
- Insurance Code. (18)  &quot;Nonprofit organization&quot; means:
-                    (A)  a corporation organized under Chapters 20 and
- 22, Business Organizations Code, and the provisions of Title 1,
- Business Organizations Code, to the extent applicable to nonprofit
- corporations;
-                    (B)  an organization exempt from federal taxation
- under Section 501(a), Internal Revenue Code of 1986, by being
- listed as an exempt organization under Section 501(c)(3),
- 501(c)(6), 501(c)(12), or 501(c)(19) of that code;
-                    (C)  a political organization; or4/22/26, 10:02 AM 88(R) HB 4 - Enrolled version - Bill Text
-https://capitol.texas.gov/tlodocs/88R/billtext/html/HB00004F.htm 2/16
-
-                    (D)  an organization that:
-                          (i)  is exempt from federal taxation under
- Section 501(a), Internal Revenue Code of 1986, by being listed as an
- exempt organization under Section 501(c)(4) of that code; and
-                          (ii)  is described by Section 701.052(a),
- Insurance Code.</rdfs:hasLaw>
-        <rdfs:label>Internal Revenue Code</rdfs:label>
     </rdf:Description>
     <rdf:Description rdf:about="http://example.org/onto.owl#IoTPlatform">
         <rdfs:hasLaw>IoT Cybersecurity Improvement Act of 2020 — “The Director of the Institute shall develop and publish … standards and guidelines … with respect to the following considerations for Internet of Things devices: (i) Secure Development. (ii) Identity management. (iii) Patching. (iv) Configuration management.” (134 Stat. 1003 § 4(a)(2)(B)) 
